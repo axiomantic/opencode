@@ -1755,15 +1755,64 @@ func (r ConfigShare) IsKnown() bool {
 // TUI specific settings
 type ConfigTui struct {
 	// TUI scroll speed
-	ScrollSpeed float64       `json:"scroll_speed"`
-	JSON        configTuiJSON `json:"-"`
+	ScrollSpeed float64 `json:"scroll_speed"`
+	// Show scrollbar in viewport
+	Scrollbar bool `json:"scrollbar"`
+	// Adaptive scrolling configuration
+	AdaptiveScroll ConfigTuiAdaptiveScroll `json:"adaptive_scroll"`
+	JSON           configTuiJSON           `json:"-"`
 }
 
 // configTuiJSON contains the JSON metadata for the struct [ConfigTui]
 type configTuiJSON struct {
-	ScrollSpeed apijson.Field
-	raw         string
-	ExtraFields map[string]apijson.Field
+	ScrollSpeed    apijson.Field
+	Scrollbar      apijson.Field
+	AdaptiveScroll apijson.Field
+	raw            string
+	ExtraFields    map[string]apijson.Field
+}
+
+type ConfigTuiAdaptiveScroll struct {
+	// Enable adaptive scrolling based on scroll velocity
+	Enabled bool `json:"enabled"`
+	// Preset profile for adaptive scrolling (responsive, balanced, aggressive)
+	Profile ConfigTuiAdaptiveScrollProfile `json:"profile"`
+	// Maximum scroll speed multiplier when scrolling fast (overrides profile)
+	MaxMultiplier float64 `json:"max_multiplier"`
+	// Rate at which scroll speed increases (overrides profile)
+	Acceleration float64 `json:"acceleration"`
+	// Rate at which scroll speed decays (overrides profile)
+	Deceleration float64 `json:"deceleration"`
+	// Time window in milliseconds for velocity calculation (overrides profile)
+	TimeWindow int64                       `json:"time_window"`
+	JSON       configTuiAdaptiveScrollJSON `json:"-"`
+}
+
+type configTuiAdaptiveScrollJSON struct {
+	Enabled       apijson.Field
+	Profile       apijson.Field
+	MaxMultiplier apijson.Field
+	Acceleration  apijson.Field
+	Deceleration  apijson.Field
+	TimeWindow    apijson.Field
+	raw           string
+	ExtraFields   map[string]apijson.Field
+}
+
+type ConfigTuiAdaptiveScrollProfile string
+
+const (
+	ConfigTuiAdaptiveScrollProfileResponsive ConfigTuiAdaptiveScrollProfile = "responsive"
+	ConfigTuiAdaptiveScrollProfileBalanced   ConfigTuiAdaptiveScrollProfile = "balanced"
+	ConfigTuiAdaptiveScrollProfileAggressive ConfigTuiAdaptiveScrollProfile = "aggressive"
+)
+
+func (r *ConfigTuiAdaptiveScroll) UnmarshalJSON(data []byte) (err error) {
+	return apijson.UnmarshalRoot(data, r)
+}
+
+func (r configTuiAdaptiveScrollJSON) RawJSON() string {
+	return r.raw
 }
 
 func (r *ConfigTui) UnmarshalJSON(data []byte) (err error) {

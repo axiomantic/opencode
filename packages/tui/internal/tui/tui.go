@@ -104,6 +104,12 @@ func (a Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		keyString := msg.String()
 
+		// Filter out raw mouse escape sequences that weren't parsed as mouse events
+		// These can leak through as KeyPress events when the system is busy
+		if len(keyString) > 0 && keyString[0] == '[' && (strings.Contains(keyString, "<") || strings.Contains(keyString, "M")) {
+			return a, nil
+		}
+
 		if a.app.CurrentPermission.ID != "" {
 			if keyString == "enter" || keyString == "esc" || keyString == "a" {
 				sessionID := a.app.CurrentPermission.SessionID
@@ -349,6 +355,22 @@ func (a Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.messages = updated.(chat.MessagesComponent)
 		cmds = append(cmds, cmd)
 		return a, tea.Batch(cmds...)
+
+	case tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg:
+		// Forward all mouse events to messages component to prevent them from falling through
+		// to the editor as raw escape sequences
+		if a.modal != nil {
+			u, cmd := a.modal.Update(msg)
+			a.modal = u.(layout.Modal)
+			cmds = append(cmds, cmd)
+			return a, tea.Batch(cmds...)
+		}
+
+		updated, cmd := a.messages.Update(msg)
+		a.messages = updated.(chat.MessagesComponent)
+		cmds = append(cmds, cmd)
+		return a, tea.Batch(cmds...)
+
 	case tea.BackgroundColorMsg:
 		styles.Terminal = &styles.TerminalInfo{
 			Background:       msg.Color,

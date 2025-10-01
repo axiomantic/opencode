@@ -1,8 +1,12 @@
 package viewport
 
 import (
+	"bytes"
+	"fmt"
 	"math"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/bubbles/v2/key"
 	tea "github.com/charmbracelet/bubbletea/v2"
@@ -11,8 +15,78 @@ import (
 )
 
 const (
+	defaultHeight         = 1
+	defaultWidth          = 1
+	defaultVerticalStep   = 1
 	defaultHorizontalStep = 6
+	fixedPointScale       = 1000 // For fixed-point arithmetic to prevent float drift
+
+	// Adaptive scroll constants
+	baseVelocity            = 1.0
+	velocitySmoothingFactor = 0.7 // Lower values = faster response, higher values = smoother
+	smoothstepFactor1       = 3.0 // Smoothstep coefficient
+	smoothstepFactor2       = 2.0 // Smoothstep coefficient
+	decayTimeMultiplier     = 2   // Multiplier for decay time calculation
+
+	// Scrollbar constants
+	scrollbarClickColumns  = 2 // Number of columns from right edge that count as scrollbar clicks
+	defaultMouseWheelDelta = 3 // Default number of lines to scroll with mouse wheel
 )
+
+// Fixed-point arithmetic helpers to prevent float precision loss
+func toFixed(f float64) int64 {
+	return int64(f * fixedPointScale)
+}
+
+func fromFixed(i int64) float64 {
+	return float64(i) / fixedPointScale
+}
+
+func fixedMultiply(a int64, b int64) int64 {
+	return (a * b) / fixedPointScale
+}
+
+// AdaptiveScrollConfig contains configuration for adaptive scroll speed
+type AdaptiveScrollConfig struct {
+	MaxMultiplier float64
+	Acceleration  float64
+	Deceleration  float64
+	TimeWindow    int64 // milliseconds
+}
+
+// Validate checks if the adaptive scroll configuration values are within reasonable bounds
+func (c *AdaptiveScrollConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+
+	if c.MaxMultiplier < baseVelocity {
+		return fmt.Errorf("MaxMultiplier must be >= %.1f, got %f", baseVelocity, c.MaxMultiplier)
+	}
+	if c.MaxMultiplier > 20.0 {
+		return fmt.Errorf("MaxMultiplier must be <= 20.0, got %f", c.MaxMultiplier)
+	}
+
+	if c.Acceleration < 0 || c.Acceleration > 2.0 {
+		return fmt.Errorf("Acceleration must be between 0 and 2.0, got %f", c.Acceleration)
+	}
+
+	if c.Deceleration < 0 || c.Deceleration > baseVelocity {
+		return fmt.Errorf("Deceleration must be between 0 and %.1f, got %f", baseVelocity, c.Deceleration)
+	}
+
+	if c.TimeWindow < 10 || c.TimeWindow > 500 {
+		return fmt.Errorf("TimeWindow must be between 10ms and 500ms, got %d", c.TimeWindow)
+	}
+
+	return nil
+}
+
+// adaptiveScrollState tracks the current state of adaptive scrolling
+type adaptiveScrollState struct {
+	lastEventTime   time.Time
+	currentVelocity float64
+}
 
 // Option is a configuration option that works in conjunction with [New]. For
 // example:
@@ -36,14 +110,42 @@ func WithHeight(h int) Option {
 	}
 }
 
+// WithScrollbar is an initialization option that enables or disables the scrollbar.
+// Pass as an argument to [New].
+func WithScrollbar(show bool) Option {
+	return func(m *Model) {
+		m.ShowScrollbar = show
+	}
+}
+
+// WithScrollbarStyles is an initialization option that sets the scrollbar styles.
+// Pass as an argument to [New].
+func WithScrollbarStyles(track, thumb lipgloss.Style) Option {
+	return func(m *Model) {
+		m.ScrollbarStyle = track
+		m.ScrollbarThumbStyle = thumb
+	}
+}
+
 // New returns a new model with the given width and height as well as default
 // key mappings.
 func New(opts ...Option) (m Model) {
+	m.setInitialValues()
+	m.memo = &Memo{}
+
+	// Initialize adaptive scroll state eagerly to prevent race conditions
+	m.scrollState = &adaptiveScrollState{
+		currentVelocity: baseVelocity,
+		lastEventTime:   time.Now(),
+	}
+
+	// Initialize fixed-point precision fields
+	m.yOffsetPrecise = 0
+	m.scrollbarDragOffsetFixed = 0
+
 	for _, opt := range opts {
 		opt(&m)
 	}
-	m.setInitialValues()
-	m.memo = &Memo{}
 	return m
 }
 
@@ -88,6 +190,10 @@ type Model struct {
 	// The number of lines the mouse wheel will scroll. By default, this is 3.
 	MouseWheelDelta int
 
+	// Adaptive scroll configuration
+	AdaptiveScrollEnabled bool
+	AdaptiveConfig        *AdaptiveScrollConfig
+
 	// YOffset is the vertical scroll position.
 	YOffset int
 
@@ -131,6 +237,22 @@ type Model struct {
 
 	highlights []highlightInfo
 	hiIdx      int
+
+	// Adaptive scroll state
+	scrollState      *adaptiveScrollState
+	scrollStateMutex sync.Mutex // Protects scrollState fields
+
+	// Scrollbar settings
+	ShowScrollbar       bool
+	ScrollbarStyle      lipgloss.Style
+	ScrollbarThumbStyle lipgloss.Style
+	scrollbarDragging   bool
+	scrollbarDragStartY int
+	scrollbarDragOffset float64
+
+	// Fixed-point precision fields to prevent drift
+	scrollbarDragOffsetFixed int64 // in thousandths of a pixel
+	yOffsetPrecise           int64 // precise offset in thousandths
 }
 
 // GutterFunc can be implemented and set into [Model.LeftGutterFunc].
@@ -161,10 +283,13 @@ type GutterContext struct {
 func (m *Model) setInitialValues() {
 	m.KeyMap = DefaultKeyMap()
 	m.MouseWheelEnabled = true
-	m.MouseWheelDelta = 3
+	m.MouseWheelDelta = defaultMouseWheelDelta
 	m.initialized = true
 	m.horizontalStep = defaultHorizontalStep
 	m.LeftGutterFunc = NoGutter
+	m.ShowScrollbar = true
+	m.ScrollbarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	m.ScrollbarThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 }
 
 // Init exists to satisfy the tea.Model interface for composability purposes.
@@ -211,17 +336,35 @@ func (m Model) PastBottom() bool {
 	return m.YOffset > m.maxYOffset()
 }
 
+// IsDraggingScrollbar returns whether the scrollbar is currently being dragged
+func (m Model) IsDraggingScrollbar() bool {
+	return m.scrollbarDragging
+}
+
+// GetAdaptiveScrollState returns the current adaptive scroll state for preservation
+func (m Model) GetAdaptiveScrollState() *adaptiveScrollState {
+	return m.scrollState
+}
+
+// SetAdaptiveScrollState sets the adaptive scroll state (for preserving state across updates)
+func (m *Model) SetAdaptiveScrollState(state *adaptiveScrollState) {
+	m.scrollState = state
+}
+
 // ScrollPercent returns the amount scrolled as a float between 0 and 1.
 func (m Model) ScrollPercent() float64 {
-	count := m.lineCount()
-	if m.Height() >= count {
+	if m.Height() >= m.lineCount() {
 		return 1.0
 	}
-	y := float64(m.YOffset)
-	h := float64(m.Height())
-	t := float64(count)
-	v := y / (t - h)
-	return math.Max(0.0, math.Min(1.0, v))
+	// XXX: In the _vast_ majority of cases, this will not divide evenly. We
+	// take advantage of the fact that int division rounds down to calculate
+	// the percentage. See below.
+	top := max(0, m.YOffset)
+	bottom := max(0, m.maxYOffset())
+	if bottom == 0 {
+		return 0.0
+	}
+	return float64(top) / float64(bottom)
 }
 
 // HorizontalScrollPercent returns the amount horizontally scrolled as a float
@@ -328,7 +471,12 @@ func (m Model) maxYOffset() int {
 // maxXOffset returns the maximum possible value of the x-offset based on the
 // viewport's content and set width.
 func (m Model) maxXOffset() int {
-	return max(0, m.longestLineWidth-m.Width())
+	width := m.Width()
+	// Account for scrollbar if shown
+	if m.ShowScrollbar && m.lineCount() > m.Height() {
+		width--
+	}
+	return max(0, m.longestLineWidth-width)
 }
 
 func (m Model) maxWidth() int {
@@ -336,9 +484,17 @@ func (m Model) maxWidth() int {
 	if m.LeftGutterFunc != nil {
 		gutterSize = lipgloss.Width(m.LeftGutterFunc(GutterContext{}))
 	}
+
+	// Account for scrollbar width if it will be shown
+	scrollbarWidth := 0
+	if m.ShowScrollbar && m.lineCount() > m.Height() {
+		scrollbarWidth = 1
+	}
+
 	return m.Width() -
 		m.Style.GetHorizontalFrameSize() -
-		gutterSize
+		gutterSize -
+		scrollbarWidth
 }
 
 func (m Model) maxHeight() int {
@@ -471,7 +627,60 @@ func (m Model) setupGutter(lines []string) []string {
 // SetYOffset sets the Y offset.
 func (m *Model) SetYOffset(n int) {
 	m.YOffset = clamp(n, 0, m.maxYOffset())
+	m.yOffsetPrecise = toFixed(float64(m.YOffset))
 	m.memo.Invalidate()
+}
+
+// SetYOffsetPercent sets the Y offset based on a percentage (0.0 to 1.0)
+func (m *Model) SetYOffsetPercent(percent float64) {
+	percent = math.Max(0.0, math.Min(1.0, percent))
+	maxOffset := m.maxYOffset()
+
+	target := percent * float64(maxOffset)
+	targetInt := int(math.Round(target))
+
+	m.SetYOffset(targetInt)
+
+	m.yOffsetPrecise = toFixed(target)
+}
+
+// isOnScrollbar checks if the given coordinates are on the scrollbar
+func (m Model) isOnScrollbar(x, y int) bool {
+	if !m.ShowScrollbar {
+		return false
+	}
+	// Scrollbar is on the right edge, but allow some tolerance for easier clicking
+	return x >= m.Width()-scrollbarClickColumns && y < m.Height()
+}
+
+// isOnScrollbarThumb checks if the given coordinates are on the scrollbar thumb
+func (m Model) isOnScrollbarThumb(x, y int) bool {
+	if !m.isOnScrollbar(x, y) {
+		return false
+	}
+
+	thumbPos, thumbSize := m.scrollbarThumbPosition()
+	return y >= thumbPos && y < thumbPos+thumbSize
+}
+
+// scrollbarThumbPosition returns the position and size of the scrollbar thumb
+func (m Model) scrollbarThumbPosition() (pos, size int) {
+	if m.Height() >= m.lineCount() {
+		// Content fits entirely, thumb takes full height
+		return 0, m.Height()
+	}
+
+	scrollPercent := m.ScrollPercent()
+	viewportRatio := float64(m.Height()) / float64(m.lineCount())
+
+	// Calculate thumb size (minimum 1 character)
+	thumbSize := int(math.Max(1, float64(m.Height())*viewportRatio))
+
+	// Calculate thumb position
+	availableSpace := m.Height() - thumbSize
+	thumbPos := int(scrollPercent * float64(availableSpace))
+
+	return thumbPos, thumbSize
 }
 
 // SetXOffset sets the X offset.
@@ -742,27 +951,143 @@ func (m Model) updateAsModel(msg tea.Msg) Model {
 			m.MoveRight(m.horizontalStep)
 		}
 
+	case tea.MouseClickMsg:
+		if m.ShowScrollbar && m.isOnScrollbar(msg.X, msg.Y) {
+			thumbPos, thumbSize := m.scrollbarThumbPosition()
+			onThumb := m.isOnScrollbarThumb(msg.X, msg.Y)
+
+			if !onThumb {
+				clickPosFixed := toFixed(float64(msg.Y)) - toFixed(float64(thumbSize))/2
+				maxThumbPosFixed := toFixed(float64(m.Height() - thumbSize))
+
+				if maxThumbPosFixed > 0 {
+					scrollPercent := fromFixed(clickPosFixed) / fromFixed(maxThumbPosFixed)
+					m.SetYOffsetPercent(scrollPercent)
+				}
+			} else {
+				m.scrollbarDragging = true
+				m.scrollbarDragStartY = msg.Y
+				m.scrollbarDragOffset = float64(msg.Y - thumbPos)
+				m.scrollbarDragOffsetFixed = toFixed(float64(msg.Y - thumbPos))
+			}
+		}
+
+	case tea.MouseMotionMsg:
+		if m.scrollbarDragging {
+			_, thumbSize := m.scrollbarThumbPosition()
+
+			targetThumbTopFixed := toFixed(float64(msg.Y)) - m.scrollbarDragOffsetFixed
+			maxThumbPosFixed := toFixed(float64(m.Height() - thumbSize))
+
+			if maxThumbPosFixed > 0 {
+				scrollPercent := fromFixed(targetThumbTopFixed) / fromFixed(maxThumbPosFixed)
+				m.SetYOffsetPercent(scrollPercent)
+			}
+		}
+
+	case tea.MouseReleaseMsg:
+		m.scrollbarDragging = false
+
 	case tea.MouseWheelMsg:
-		if !m.MouseWheelEnabled {
+		if !m.MouseWheelEnabled || m.scrollbarDragging {
 			break
+		}
+
+		delta := m.MouseWheelDelta
+
+		if m.AdaptiveScrollEnabled && m.AdaptiveConfig != nil {
+			m.updateAdaptiveScrollTiming()
+			delta = m.calculateAdaptiveDelta(delta)
 		}
 
 		switch msg.Button {
 		case tea.MouseWheelDown:
-			m.LineDown(m.MouseWheelDelta)
+			m.LineDown(delta)
 
 		case tea.MouseWheelUp:
-			m.LineUp(m.MouseWheelDelta)
+			m.LineUp(delta)
 		}
 	}
 
 	return m
 }
 
-// View renders the viewport into a string.
-func (m *Model) render() {
+// updateAdaptiveScrollTiming updates the timing for adaptive scroll velocity calculation
+// This should be called immediately when a scroll event is received, before any processing
+func (m *Model) updateAdaptiveScrollTiming() {
+	m.updateAdaptiveScrollTimingWithEvent(true)
 }
 
+// updateAdaptiveScrollTimingWithEvent updates velocity, optionally marking a new scroll event
+func (m *Model) updateAdaptiveScrollTimingWithEvent(isScrollEvent bool) {
+	// scrollState is now initialized in New(), no need for nil check
+	m.scrollStateMutex.Lock()
+	defer m.scrollStateMutex.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(m.scrollState.lastEventTime).Milliseconds()
+
+	// Smooth velocity curve using continuous function instead of hard boundaries
+	velocityTarget := baseVelocity
+
+	if elapsed < m.AdaptiveConfig.TimeWindow {
+		// Acceleration phase - smooth ramp up based on how recent
+		progress := float64(m.AdaptiveConfig.TimeWindow-elapsed) / float64(m.AdaptiveConfig.TimeWindow)
+		// Use smoothstep for smoother acceleration
+		progress = progress * progress * (smoothstepFactor1 - smoothstepFactor2*progress)
+		velocityTarget = m.scrollState.currentVelocity + m.AdaptiveConfig.Acceleration*progress
+		velocityTarget = math.Min(velocityTarget, m.AdaptiveConfig.MaxMultiplier)
+	} else {
+		// Deceleration phase - smooth exponential decay
+		decayTime := float64(elapsed - m.AdaptiveConfig.TimeWindow)
+		// Use exponential decay that reaches near-zero in reasonable time
+		// Decay rate adjusted to reach ~0.1 of original after 1 second
+		decayFactor := math.Exp(-decayTime / (float64(m.AdaptiveConfig.TimeWindow) * decayTimeMultiplier))
+		velocityTarget = baseVelocity + (m.scrollState.currentVelocity-baseVelocity)*decayFactor*m.AdaptiveConfig.Deceleration
+	}
+
+	// Smooth transition to target velocity (prevents jumps)
+	m.scrollState.currentVelocity = m.scrollState.currentVelocity*velocitySmoothingFactor +
+		velocityTarget*(1-velocitySmoothingFactor)
+
+	// Ensure bounds
+	m.scrollState.currentVelocity = math.Max(baseVelocity,
+		math.Min(m.AdaptiveConfig.MaxMultiplier, m.scrollState.currentVelocity))
+
+	// Only update lastEventTime if this is an actual scroll event
+	if isScrollEvent {
+		m.scrollState.lastEventTime = now
+	}
+}
+
+// ensureScrollState is a defensive helper to ensure scrollState is initialized
+// This should not be needed if New() is always used, but provides safety
+func (m *Model) ensureScrollState() {
+	m.scrollStateMutex.Lock()
+	defer m.scrollStateMutex.Unlock()
+
+	if m.scrollState == nil {
+		m.scrollState = &adaptiveScrollState{
+			currentVelocity: baseVelocity,
+			lastEventTime:   time.Now(),
+		}
+	}
+}
+
+// calculateAdaptiveDelta calculates the scroll delta based on current velocity
+// This uses the velocity that was already calculated by updateAdaptiveScrollTiming
+func (m *Model) calculateAdaptiveDelta(base int) int {
+	// scrollState is now initialized in New(), no need for nil check
+	// But we can call ensureScrollState() for extra safety if needed
+	m.scrollStateMutex.Lock()
+	velocity := m.scrollState.currentVelocity
+	m.scrollStateMutex.Unlock()
+
+	result := int(float64(base) * velocity)
+	return result
+}
+
+// View renders the viewport into a string.
 func (m Model) View() string {
 	return m.memo.View(func() string {
 		w, h := m.Width(), m.Height()
@@ -772,19 +1097,111 @@ func (m Model) View() string {
 		if sh := m.Style.GetHeight(); sh != 0 {
 			h = min(h, sh)
 		}
-		contentWidth := w - m.Style.GetHorizontalFrameSize()
-		contentHeight := h - m.Style.GetVerticalFrameSize()
+
+		// Check if scrollbar will be shown
+		showScrollbar := m.ShowScrollbar && m.lineCount() > m.Height()
+
+		// Get visible lines (already accounts for scrollbar in maxWidth)
 		visible := m.visibleLines()
-		contents := lipgloss.NewStyle().
-			Width(contentWidth).      // pad to width.
-			Height(contentHeight).    // pad to height.
-			MaxHeight(contentHeight). // truncate height if taller.
-			MaxWidth(contentWidth).   // truncate width if wider.
-			Render(strings.Join(visible, "\n"))
+
+		// Calculate dimensions
+		contentHeight := h - m.Style.GetVerticalFrameSize()
+		contentWidth := w - m.Style.GetHorizontalFrameSize()
+
+		// Don't reduce width here since visibleLines already did
+		var contents string
+		if showScrollbar {
+			// Render content at the width calculated by visibleLines
+			// and let addScrollbar handle combining with scrollbar
+			contents = strings.Join(visible, "\n")
+			contents = m.addScrollbar(contents, contentHeight)
+		} else {
+			// No scrollbar, render normally
+			contents = lipgloss.NewStyle().
+				Width(contentWidth).
+				Height(contentHeight).
+				MaxHeight(contentHeight).
+				MaxWidth(contentWidth).
+				Render(strings.Join(visible, "\n"))
+		}
+
 		return m.Style.
-			UnsetWidth().UnsetHeight(). // Style size already applied in contents.
+			UnsetWidth().UnsetHeight().
 			Render(contents)
 	})
+}
+
+// addScrollbar adds a scrollbar to the right side of the content
+func (m Model) addScrollbar(content string, height int) string {
+	// Safety check for invalid height
+	if height <= 0 {
+		return content
+	}
+
+	lines := strings.Split(content, "\n")
+
+	// Ensure we have the right number of lines
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+
+	// Get scrollbar thumb position and size
+	thumbPos, thumbSize := m.scrollbarThumbPosition()
+
+	// Calculate the actual content width (accounting for frame and scrollbar)
+	contentWidth := m.Width() - m.Style.GetHorizontalFrameSize() - 1
+	if contentWidth <= 0 {
+		return content
+	}
+
+	// Pre-allocate buffer with estimated size
+	// Estimate: average line length * height + scrollbar chars + newlines
+	estimatedSize := len(content) + height*2
+	var result bytes.Buffer
+	result.Grow(estimatedSize)
+
+	// Pre-allocate padding buffer once
+	maxPadding := contentWidth
+	paddingBuf := make([]byte, maxPadding)
+	for i := range paddingBuf {
+		paddingBuf[i] = ' '
+	}
+
+	// Pre-render scrollbar characters once
+	thumbChar := m.ScrollbarThumbStyle.Render("█")
+	trackChar := m.ScrollbarStyle.Render("│")
+
+	for i := 0; i < height && i < len(lines); i++ {
+		if i > 0 {
+			result.WriteByte('\n')
+		}
+
+		line := lines[i]
+
+		// Ensure line is exactly the right width for consistent alignment
+		lineWidth := ansi.StringWidth(line)
+		if lineWidth > contentWidth {
+			// Truncate if too long
+			line = ansi.Cut(line, 0, contentWidth)
+			result.WriteString(line)
+		} else if lineWidth < contentWidth {
+			// Write line then padding
+			result.WriteString(line)
+			paddingNeeded := contentWidth - lineWidth
+			result.Write(paddingBuf[:paddingNeeded])
+		} else {
+			result.WriteString(line)
+		}
+
+		// Add scrollbar character
+		if i >= thumbPos && i < thumbPos+thumbSize {
+			result.WriteString(thumbChar)
+		} else {
+			result.WriteString(trackChar)
+		}
+	}
+
+	return result.String()
 }
 
 func clamp(v, low, high int) int {

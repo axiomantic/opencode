@@ -52,6 +52,8 @@ type App struct {
 	IsLeaderSequence  bool
 	IsBashMode        bool
 	ScrollSpeed       int
+	Scrollbar         bool
+	AdaptiveScroll    opencode.ConfigTuiAdaptiveScroll
 }
 
 func (a *App) Agent() *opencode.Agent {
@@ -211,6 +213,8 @@ func New(
 		InitialAgent:   initialAgent,
 		InitialSession: initialSession,
 		ScrollSpeed:    int(configInfo.Tui.ScrollSpeed),
+		Scrollbar:      configInfo.Tui.Scrollbar,
+		AdaptiveScroll: configInfo.Tui.AdaptiveScroll,
 	}
 
 	return app, nil

@@ -385,9 +385,47 @@ export namespace Config {
       ref: "KeybindsConfig",
     })
 
-  export const TUI = z.object({
-    scroll_speed: z.number().min(1).optional().default(2).describe("TUI scroll speed"),
-  })
+  export const AdaptiveScroll = z
+    .object({
+      enabled: z.boolean().optional().default(true).describe("Enable adaptive scrolling based on scroll velocity"),
+      profile: z
+        .enum(["responsive", "balanced", "aggressive"])
+        .optional()
+        .default("balanced")
+        .describe("Preset profile for adaptive scrolling (responsive, balanced, aggressive)"),
+      max_multiplier: z
+        .number()
+        .min(1)
+        .optional()
+        .describe("Maximum scroll speed multiplier when scrolling fast (overrides profile)"),
+      acceleration: z.number().min(0).optional().describe("Rate at which scroll speed increases (overrides profile)"),
+      deceleration: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe("Rate at which scroll speed decays (overrides profile)"),
+      time_window: z
+        .number()
+        .min(1)
+        .optional()
+        .describe("Time window in milliseconds for velocity calculation (overrides profile)"),
+    })
+    .strict()
+    .meta({
+      ref: "AdaptiveScrollConfig",
+    })
+
+  export const TUI = z
+    .object({
+      scroll_speed: z.number().min(1).optional().default(2).describe("TUI scroll speed"),
+      scrollbar: z.boolean().optional().default(true).describe("Show scrollbar in viewport"),
+      adaptive_scroll: AdaptiveScroll.optional().describe("Adaptive scrolling configuration"),
+    })
+    .strict()
+    .meta({
+      ref: "TUIConfig",
+    })
 
   export const Layout = z.enum(["auto", "stretch"]).meta({
     ref: "LayoutConfig",

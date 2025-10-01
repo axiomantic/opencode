@@ -120,7 +120,37 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Tick(90*time.Millisecond, func(t time.Time) tea.Msg { return shimmerTickMsg{} }),
 		)
 	case tea.MouseClickMsg:
-		slog.Info("mouse", "x", msg.X, "y", msg.Y, "offset", m.viewport.YOffset)
+		// Check if click is in the rightmost 2 columns (scrollbar area)
+		// Prevent text selection in scrollbar region
+		isInScrollbarArea := msg.X >= m.width-2
+
+		// Adjust Y coordinate for header offset
+		headerHeight := lipgloss.Height(m.header)
+		adjustedY := msg.Y - headerHeight - 1
+
+		if isInScrollbarArea && adjustedY >= 0 {
+			// Let viewport handle scrollbar interaction with adjusted coordinates
+			adjustedMsg := tea.MouseClickMsg{
+				X:      msg.X,
+				Y:      adjustedY,
+				Button: msg.Button,
+			}
+			newViewport, _ := m.viewport.Update(adjustedMsg)
+			m.viewport = newViewport
+			return m, nil
+		}
+
+		// For non-scrollbar clicks, pass through to viewport with adjusted coords
+		if adjustedY >= 0 {
+			adjustedMsg := tea.MouseClickMsg{
+				X:      msg.X,
+				Y:      adjustedY,
+				Button: msg.Button,
+			}
+			newViewport, _ := m.viewport.Update(adjustedMsg)
+			m.viewport = newViewport
+		}
+
 		y := msg.Y + m.viewport.YOffset
 		if y > 0 {
 			m.selection = &selection{
@@ -135,7 +165,26 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMotionMsg:
-		if m.selection != nil {
+		// Adjust Y coordinate for header offset
+		headerHeight := lipgloss.Height(m.header)
+		adjustedY := msg.Y - headerHeight - 1
+
+		// Always let viewport handle motion if it's dragging scrollbar
+		if m.viewport.IsDraggingScrollbar() {
+			adjustedMsg := tea.MouseMotionMsg{
+				X: msg.X,
+				Y: adjustedY,
+			}
+			newViewport, _ := m.viewport.Update(adjustedMsg)
+			m.viewport = newViewport
+			return m, nil
+		}
+
+		// Check if motion is in scrollbar area (rightmost 2 columns)
+		isInScrollbarArea := msg.X >= m.width-2
+
+		// Don't update text selection if in scrollbar area
+		if m.selection != nil && !isInScrollbarArea {
 			m.selection = &selection{
 				startX: m.selection.startX,
 				startY: m.selection.startY,
@@ -146,6 +195,24 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseReleaseMsg:
+		// Adjust Y coordinate for header offset
+		headerHeight := lipgloss.Height(m.header)
+		adjustedY := msg.Y - headerHeight - 1
+
+		adjustedMsg := tea.MouseReleaseMsg{
+			X:      msg.X,
+			Y:      adjustedY,
+			Button: msg.Button,
+		}
+
+		newViewport, _ := m.viewport.Update(adjustedMsg)
+		wasDragging := m.viewport.IsDraggingScrollbar()
+		m.viewport = newViewport
+
+		if wasDragging {
+			return m, nil
+		}
+
 		if m.selection != nil {
 			m.selection = nil
 			if len(m.clipboard) > 0 {
@@ -161,15 +228,20 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		effectiveWidth := msg.Width - 4
-		// Clear cache on resize since width affects rendering
-		if m.width != effectiveWidth {
-			m.cache.Clear()
+		effectiveHeight := msg.Height - 7
+		widthChanged := m.width != effectiveWidth
+		if widthChanged || m.height != effectiveHeight {
+			if widthChanged {
+				m.cache.Clear()
+			}
+			m.width = effectiveWidth
+			m.height = effectiveHeight
+			m.viewport.SetWidth(m.width)
+			m.viewport.SetHeight(m.height)
+			m.loading = true
+			return m, m.renderView()
 		}
-		m.width = effectiveWidth
-		m.height = msg.Height - 7
-		m.viewport.SetWidth(m.width)
-		m.loading = true
-		return m, m.renderView()
+		return m, nil
 	case app.SendPrompt:
 		m.viewport.GotoBottom()
 		m.tail = true
@@ -1057,6 +1129,8 @@ func (m *messagesComponent) View() string {
 	viewport := m.viewport.View()
 	return styles.NewStyle().
 		Background(bgColor).
+		Width(m.width).
+		MaxWidth(m.width).
 		Render(m.header + "\n" + viewport)
 }
 
@@ -1295,6 +1369,52 @@ func NewMessagesComponent(app *app.App) MessagesComponent {
 		vp.MouseWheelDelta = app.ScrollSpeed
 	} else {
 		vp.MouseWheelDelta = 2
+	}
+
+	vp.ShowScrollbar = app.Scrollbar
+
+	if app.AdaptiveScroll.Enabled {
+		vp.AdaptiveScrollEnabled = true
+
+		config := &viewport.AdaptiveScrollConfig{}
+
+		switch string(app.AdaptiveScroll.Profile) {
+		case "responsive":
+			config.MaxMultiplier = 3.0
+			config.Acceleration = 0.3
+			config.Deceleration = 0.85
+			config.TimeWindow = 100
+		case "balanced":
+			config.MaxMultiplier = 5.0
+			config.Acceleration = 0.5
+			config.Deceleration = 0.95
+			config.TimeWindow = 50
+		case "aggressive":
+			config.MaxMultiplier = 8.0
+			config.Acceleration = 0.7
+			config.Deceleration = 0.98
+			config.TimeWindow = 30
+		default:
+			config.MaxMultiplier = 5.0
+			config.Acceleration = 0.5
+			config.Deceleration = 0.95
+			config.TimeWindow = 50
+		}
+
+		if app.AdaptiveScroll.MaxMultiplier > 0 {
+			config.MaxMultiplier = app.AdaptiveScroll.MaxMultiplier
+		}
+		if app.AdaptiveScroll.Acceleration > 0 {
+			config.Acceleration = app.AdaptiveScroll.Acceleration
+		}
+		if app.AdaptiveScroll.Deceleration > 0 {
+			config.Deceleration = app.AdaptiveScroll.Deceleration
+		}
+		if app.AdaptiveScroll.TimeWindow > 0 {
+			config.TimeWindow = app.AdaptiveScroll.TimeWindow
+		}
+
+		vp.AdaptiveConfig = config
 	}
 
 	// Default to showing tool details, hidden thinking blocks
