@@ -63,6 +63,33 @@ func (s *sanitizer) Sanitize(runes []rune) []rune {
 
 	for src := 0; src < len(runes); src++ {
 		r := runes[src]
+
+		// Check for escape sequence start (ESC or 0x1B)
+		if r == 0x1B || r == '\x1b' {
+			// Skip the entire escape sequence
+			// Common patterns: ESC[...M, ESC[...m, ESC[<...
+			seqEnd := src + 1
+			for seqEnd < len(runes) {
+				// Look for sequence terminator
+				if runes[seqEnd] == 'M' || runes[seqEnd] == 'm' ||
+					runes[seqEnd] == 'H' || runes[seqEnd] == 'J' ||
+					runes[seqEnd] == 'K' || runes[seqEnd] == 'A' ||
+					runes[seqEnd] == 'B' || runes[seqEnd] == 'C' ||
+					runes[seqEnd] == 'D' || runes[seqEnd] == '~' {
+					// Found terminator, skip entire sequence
+					src = seqEnd
+					break
+				}
+				// Safety: don't scan too far
+				if seqEnd-src > 20 {
+					// Probably not a valid escape sequence
+					break
+				}
+				seqEnd++
+			}
+			continue
+		}
+
 		switch {
 		case r == utf8.RuneError:
 			// skip

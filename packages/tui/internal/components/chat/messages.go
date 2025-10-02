@@ -61,6 +61,7 @@ type messagesComponent struct {
 	selection          *selection
 	messagePositions   map[string]int // map message ID to line position
 	animating          bool
+	lastMouseWheel     time.Time // Rate limiting for mouse wheel events
 }
 
 type selection struct {
@@ -227,9 +228,18 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.renderView()
 		}
 	case tea.MouseWheelMsg:
+		// Rate limit mouse wheel events to prevent overwhelming the system
+		// and escape sequences leaking through
+		now := time.Now()
+		if now.Sub(m.lastMouseWheel) < 10*time.Millisecond {
+			// Drop events that are too frequent
+			return m, nil
+		}
+		m.lastMouseWheel = now
+
 		// Consume mouse wheel events when rendering to prevent escape sequences
 		// from appearing in the input during heavy load
-		if m.rendering {
+		if m.rendering || m.loading {
 			return m, nil
 		}
 		// Pass through to viewport via default handler at the end

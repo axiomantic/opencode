@@ -106,8 +106,21 @@ func (a Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Filter out raw mouse escape sequences that weren't parsed as mouse events
 		// These can leak through as KeyPress events when the system is busy
-		if len(keyString) > 0 && keyString[0] == '[' && (strings.Contains(keyString, "<") || strings.Contains(keyString, "M")) {
-			return a, nil
+		// Common patterns: ESC[M, ESC[<, or sequences with 'M'/'m' after numbers/semicolons
+		if len(keyString) > 0 {
+			// Check for escape sequence start
+			if keyString[0] == '\x1b' || (keyString[0] == '[' && len(keyString) > 1) {
+				// Check for mouse sequence patterns
+				if strings.ContainsAny(keyString, "Mm") ||
+					strings.Contains(keyString, "<") ||
+					(strings.Contains(keyString, "[") && strings.ContainsAny(keyString, "0123456789;")) {
+					return a, nil
+				}
+			}
+			// Also filter partial sequences that might be mouse-related
+			if len(keyString) <= 3 && strings.ContainsAny(keyString, "\x1b[<;0123456789") {
+				return a, nil
+			}
 		}
 
 		if a.app.CurrentPermission.ID != "" {
