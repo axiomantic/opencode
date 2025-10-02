@@ -800,7 +800,7 @@ func (a *App) SendPrompt(ctx context.Context, prompt Prompt) (*App, tea.Cmd) {
 
 	a.Messages = append(a.Messages, message)
 
-	cmds = append(cmds, func() tea.Msg {
+	go func() {
 		_, err := a.Client.Session.Prompt(ctx, a.Session.ID, opencode.SessionPromptParams{
 			Model: opencode.F(opencode.SessionPromptParamsModel{
 				ProviderID: opencode.F(a.Provider.ID),
@@ -813,13 +813,9 @@ func (a *App) SendPrompt(ctx context.Context, prompt Prompt) (*App, tea.Cmd) {
 		if err != nil {
 			errormsg := fmt.Sprintf("failed to send message: %v", err)
 			slog.Error(errormsg)
-			return toast.NewErrorToast(errormsg)()
 		}
-		return nil
-	})
+	}()
 
-	// The actual response will come through SSE
-	// For now, just return success
 	return a, tea.Batch(cmds...)
 }
 
@@ -834,7 +830,7 @@ func (a *App) SendCommand(ctx context.Context, command string, args string) (*Ap
 		cmds = append(cmds, util.CmdHandler(SessionCreatedMsg{Session: session}))
 	}
 
-	cmds = append(cmds, func() tea.Msg {
+	go func() {
 		params := opencode.SessionCommandParams{
 			Command:   opencode.F(command),
 			Arguments: opencode.F(args),
@@ -850,13 +846,9 @@ func (a *App) SendCommand(ctx context.Context, command string, args string) (*Ap
 		)
 		if err != nil {
 			slog.Error("Failed to execute command", "error", err)
-			return toast.NewErrorToast(fmt.Sprintf("Failed to execute command: %v", err))()
 		}
-		return nil
-	})
+	}()
 
-	// The actual response will come through SSE
-	// For now, just return success
 	return a, tea.Batch(cmds...)
 }
 
@@ -871,7 +863,7 @@ func (a *App) SendShell(ctx context.Context, command string) (*App, tea.Cmd) {
 		cmds = append(cmds, util.CmdHandler(SessionCreatedMsg{Session: session}))
 	}
 
-	cmds = append(cmds, func() tea.Msg {
+	go func() {
 		_, err := a.Client.Session.Shell(
 			context.Background(),
 			a.Session.ID,
@@ -882,13 +874,9 @@ func (a *App) SendShell(ctx context.Context, command string) (*App, tea.Cmd) {
 		)
 		if err != nil {
 			slog.Error("Failed to submit shell command", "error", err)
-			return toast.NewErrorToast(fmt.Sprintf("Failed to submit shell command: %v", err))()
 		}
-		return nil
-	})
+	}()
 
-	// The actual response will come through SSE
-	// For now, just return success
 	return a, tea.Batch(cmds...)
 }
 
