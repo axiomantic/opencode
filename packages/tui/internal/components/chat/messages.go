@@ -936,6 +936,7 @@ func (m *messagesComponent) renderView() tea.Cmd {
 			final = append(final, "")
 		}
 		content := "\n" + strings.Join(final, "\n")
+		viewport.SetWidth(m.width)
 		viewport.SetHeight(m.height - lipgloss.Height(header))
 		viewport.SetContent(content)
 		if tail {
