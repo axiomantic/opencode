@@ -1137,12 +1137,16 @@ func (m *messagesComponent) View() string {
 	bgColor := t.Background()
 
 	if m.loading {
+		loadingText := styles.NewStyle().
+			Foreground(t.TextMuted()).
+			Render("Reflowing text...")
+
 		return lipgloss.Place(
 			m.width,
 			m.height,
 			lipgloss.Center,
 			lipgloss.Center,
-			styles.NewStyle().Background(bgColor).Render(""),
+			loadingText,
 			styles.WhitespaceStyle(bgColor),
 		)
 	}
