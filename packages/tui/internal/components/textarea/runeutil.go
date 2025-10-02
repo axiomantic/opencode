@@ -1,5 +1,3 @@
-// Package runeutil provides utility functions for tidying up incoming runes
-// from Key messages.
 package textarea
 
 import (
@@ -7,7 +5,8 @@ import (
 	"unicode/utf8"
 )
 
-// Sanitizer is a helper for bubble widgets that want to process
+// Sanitizer exposes an interface for sanitizing text of control characters.
+// Currently, its main purpose is to strip raw terminal escape sequences from
 // Runes from input key messages.
 type Sanitizer interface {
 	// Sanitize removes control characters from runes in a KeyRunes
@@ -65,10 +64,12 @@ func (s *sanitizer) Sanitize(runes []rune) []rune {
 		r := runes[src]
 
 		// Check for escape sequence start (ESC or 0x1B)
-		if r == 0x1B || r == '\x1b' {
-			// Skip the entire escape sequence
+		// Must be followed by '[' to be a valid CSI sequence
+		if (r == 0x1B || r == '\x1b') && src+1 < len(runes) && runes[src+1] == '[' {
+			// Try to skip the entire escape sequence
 			// Common patterns: ESC[...M, ESC[...m, ESC[<...
-			seqEnd := src + 1
+			seqEnd := src + 2 // Start after ESC[
+			foundTerminator := false
 			for seqEnd < len(runes) {
 				// Look for sequence terminator
 				if runes[seqEnd] == 'M' || runes[seqEnd] == 'm' ||
@@ -76,8 +77,9 @@ func (s *sanitizer) Sanitize(runes []rune) []rune {
 					runes[seqEnd] == 'K' || runes[seqEnd] == 'A' ||
 					runes[seqEnd] == 'B' || runes[seqEnd] == 'C' ||
 					runes[seqEnd] == 'D' || runes[seqEnd] == '~' {
-					// Found terminator, skip entire sequence
+					// Found terminator, skip entire sequence including terminator
 					src = seqEnd
+					foundTerminator = true
 					break
 				}
 				// Safety: don't scan too far
@@ -87,7 +89,11 @@ func (s *sanitizer) Sanitize(runes []rune) []rune {
 				}
 				seqEnd++
 			}
-			continue
+			if foundTerminator {
+				continue
+			}
+			// If we didn't find a terminator, ESC will be handled as control char below
+			// and '[' will be kept as a regular character
 		}
 
 		switch {
