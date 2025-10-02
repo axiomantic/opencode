@@ -637,7 +637,7 @@ func (m *Model) SetYOffsetPercent(percent float64) {
 	maxOffset := m.maxYOffset()
 
 	target := percent * float64(maxOffset)
-	targetInt := int(math.Round(target))
+	targetInt := int(target)
 
 	m.SetYOffset(targetInt)
 
@@ -650,7 +650,7 @@ func (m Model) isOnScrollbar(x, y int) bool {
 		return false
 	}
 	// Scrollbar is on the right edge, but allow some tolerance for easier clicking
-	return x >= m.Width()-scrollbarClickColumns && y < m.Height()
+	return x >= m.Width()-scrollbarClickColumns && y < m.maxHeight()
 }
 
 // isOnScrollbarThumb checks if the given coordinates are on the scrollbar thumb
@@ -665,22 +665,27 @@ func (m Model) isOnScrollbarThumb(x, y int) bool {
 
 // scrollbarThumbPosition returns the position and size of the scrollbar thumb
 func (m Model) scrollbarThumbPosition() (pos, size int) {
-	if m.Height() >= m.lineCount() {
+	scrollbarHeight := m.maxHeight()
+	if scrollbarHeight >= m.lineCount() {
 		// Content fits entirely, thumb takes full height
-		return 0, m.Height()
+		return 0, scrollbarHeight
 	}
 
-	scrollPercent := m.ScrollPercent()
-	viewportRatio := float64(m.Height()) / float64(m.lineCount())
+	viewportRatio := float64(scrollbarHeight) / float64(m.lineCount())
 
 	// Calculate thumb size (minimum 1 character)
-	thumbSize := int(math.Max(1, float64(m.Height())*viewportRatio))
+	thumbSize := int(math.Max(1, float64(scrollbarHeight)*viewportRatio))
 
-	// Calculate thumb position
-	availableSpace := m.Height() - thumbSize
-	thumbPos := int(scrollPercent * float64(availableSpace))
+	// Calculate thumb position using precise offset for accuracy
+	availableSpace := scrollbarHeight - thumbSize
+	maxOffset := m.maxYOffset()
+	if maxOffset > 0 {
+		scrollPercent := fromFixed(m.yOffsetPrecise) / float64(maxOffset)
+		thumbPos := int(scrollPercent * float64(availableSpace))
+		return thumbPos, thumbSize
+	}
 
-	return thumbPos, thumbSize
+	return 0, thumbSize
 }
 
 // SetXOffset sets the X offset.
@@ -957,13 +962,23 @@ func (m Model) updateAsModel(msg tea.Msg) Model {
 			onThumb := m.isOnScrollbarThumb(msg.X, msg.Y)
 
 			if !onThumb {
-				clickPosFixed := toFixed(float64(msg.Y)) - toFixed(float64(thumbSize))/2
-				maxThumbPosFixed := toFixed(float64(m.Height() - thumbSize))
-
-				if maxThumbPosFixed > 0 {
-					scrollPercent := fromFixed(clickPosFixed) / fromFixed(maxThumbPosFixed)
-					m.SetYOffsetPercent(scrollPercent)
+				scrollbarHeight := m.maxHeight()
+				availableSpace := scrollbarHeight - thumbSize
+				maxOffset := m.maxYOffset()
+				if availableSpace > 0 && maxOffset > 0 {
+					targetThumbPos := max(0, min(msg.Y+1, availableSpace))
+					scrollPercent := float64(targetThumbPos) / float64(availableSpace)
+					targetYOffsetFloat := scrollPercent * float64(maxOffset)
+					targetYOffset := int(targetYOffsetFloat)
+					m.YOffset = clamp(targetYOffset, 0, maxOffset)
+					m.yOffsetPrecise = toFixed(targetYOffsetFloat)
+					m.memo.Invalidate()
 				}
+
+				m.scrollbarDragging = true
+				m.scrollbarDragStartY = msg.Y
+				m.scrollbarDragOffset = 1
+				m.scrollbarDragOffsetFixed = toFixed(1.0)
 			} else {
 				m.scrollbarDragging = true
 				m.scrollbarDragStartY = msg.Y

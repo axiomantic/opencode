@@ -226,6 +226,14 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.renderView()
 		}
+	case tea.MouseWheelMsg:
+		// Consume mouse wheel events when rendering to prevent escape sequences
+		// from appearing in the input during heavy load
+		if m.rendering {
+			return m, nil
+		}
+		// Pass through to viewport via default handler at the end
+
 	case tea.WindowSizeMsg:
 		effectiveWidth := msg.Width - 4
 		effectiveHeight := msg.Height - 7
@@ -1372,6 +1380,17 @@ func NewMessagesComponent(app *app.App) MessagesComponent {
 	}
 
 	vp.ShowScrollbar = app.Scrollbar
+
+	t := theme.CurrentTheme()
+	bgColor := t.Background()
+	vp.ScrollbarStyle = styles.NewStyle().
+		Foreground(t.TextMuted()).
+		Background(bgColor).
+		Lipgloss()
+	vp.ScrollbarThumbStyle = styles.NewStyle().
+		Foreground(t.BorderSubtle()).
+		Background(bgColor).
+		Lipgloss()
 
 	if app.AdaptiveScroll.Enabled {
 		vp.AdaptiveScrollEnabled = true
