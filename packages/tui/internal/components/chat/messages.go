@@ -248,16 +248,19 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		effectiveWidth := msg.Width - 4
 		effectiveHeight := msg.Height - 7
 		widthChanged := m.width != effectiveWidth
-		if widthChanged || m.height != effectiveHeight {
-			if widthChanged {
-				m.cache.Clear()
-			}
+		heightChanged := m.height != effectiveHeight
+
+		if widthChanged || heightChanged {
 			m.width = effectiveWidth
 			m.height = effectiveHeight
 			m.viewport.SetWidth(m.width)
 			m.viewport.SetHeight(m.height)
-			m.loading = true
-			return m, m.renderView()
+
+			if widthChanged {
+				m.cache.Clear()
+				m.loading = true
+				return m, m.renderView()
+			}
 		}
 		return m, nil
 	case app.SendPrompt:
