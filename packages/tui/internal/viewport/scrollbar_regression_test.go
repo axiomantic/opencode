@@ -133,8 +133,8 @@ func TestScrollbar_InteractiveBehavior(t *testing.T) {
 		m = m.updateAsModel(msg)
 
 		// Verify scroll position changed appropriately
-		// The thumb should move so its center is near the click position
-		expectedScrollPercent := 0.4 // Approximately 40% (adjusted for thumb size)
+		// With +1 offset adjustment, clicking at Y=5 moves thumb to Y=6
+		expectedScrollPercent := 0.8 // Approximately 80% (click at 5 + 1 offset)
 		actualPercent := m.ScrollPercent()
 
 		if actualPercent < expectedScrollPercent-0.2 || actualPercent > expectedScrollPercent+0.2 {

@@ -150,12 +150,12 @@ func TestScrollbar_MouseInteraction(t *testing.T) {
 		expectedDragging bool
 	}{
 		{
-			name:             "click on scrollbar track jumps to position",
+			name:             "click on scrollbar track jumps to position and enables dragging",
 			action:           "click",
 			mouseX:           19,
 			mouseY:           5,
 			expectedScrolled: true,
-			expectedDragging: false,
+			expectedDragging: true, // Now enables dragging for immediate drag support
 		},
 		{
 			name:             "click outside scrollbar does nothing",
