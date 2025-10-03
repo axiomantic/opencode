@@ -84,8 +84,9 @@ func (c *AdaptiveScrollConfig) Validate() error {
 
 // adaptiveScrollState tracks the current state of adaptive scrolling
 type adaptiveScrollState struct {
-	lastEventTime   time.Time
-	currentVelocity float64
+	lastEventTime     time.Time
+	lastProcessedTime time.Time
+	currentVelocity   float64
 }
 
 // Option is a configuration option that works in conjunction with [New]. For
@@ -134,9 +135,11 @@ func New(opts ...Option) (m Model) {
 	m.memo = &Memo{}
 
 	// Initialize adaptive scroll state eagerly to prevent race conditions
+	now := time.Now()
 	m.scrollState = &adaptiveScrollState{
-		currentVelocity: baseVelocity,
-		lastEventTime:   time.Now(),
+		currentVelocity:   baseVelocity,
+		lastEventTime:     now,
+		lastProcessedTime: now,
 	}
 
 	// Initialize fixed-point precision fields
@@ -1006,6 +1009,23 @@ func (m Model) updateAsModel(msg tea.Msg) Model {
 	case tea.MouseWheelMsg:
 		if !m.MouseWheelEnabled || m.scrollbarDragging {
 			break
+		}
+
+		// Rate limit scroll events to prevent backlog (only when adaptive scroll is enabled)
+		// Skip events if less than 16ms has passed since last processed event (60fps)
+		if m.AdaptiveScrollEnabled && m.AdaptiveConfig != nil {
+			m.scrollStateMutex.Lock()
+			now := time.Now()
+			timeSinceLastProcessed := now.Sub(m.scrollState.lastProcessedTime).Milliseconds()
+			const minScrollIntervalMs = 16
+
+			if timeSinceLastProcessed < minScrollIntervalMs {
+				// Too soon since last event, skip to prevent backlog
+				m.scrollStateMutex.Unlock()
+				break
+			}
+			m.scrollState.lastProcessedTime = now
+			m.scrollStateMutex.Unlock()
 		}
 
 		delta := m.MouseWheelDelta

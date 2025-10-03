@@ -3,6 +3,7 @@ package viewport
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss/v2"
@@ -311,6 +312,9 @@ func TestScrollbar_WithAdaptiveScroll(t *testing.T) {
 	// Release drag
 	releaseMsg := tea.MouseReleaseMsg{X: 19, Y: 2, Button: tea.MouseLeft}
 	m = m.updateAsModel(releaseMsg)
+
+	// Wait for rate limit window to pass (16ms minimum interval)
+	time.Sleep(20 * time.Millisecond)
 
 	// Now mouse wheel should work
 	m = m.updateAsModel(wheelMsg)
