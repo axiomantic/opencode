@@ -108,6 +108,10 @@ func (a Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// These can leak through as KeyPress events when the system is busy
 		// Common patterns: ESC[M, ESC[<, or sequences with 'M'/'m' after numbers/semicolons
 		if len(keyString) > 0 {
+			// Filter standalone 'M' which is a mouse sequence terminator that got separated
+			if keyString == "M" {
+				return a, nil
+			}
 			// Check for escape sequence start
 			if keyString[0] == '\x1b' || (keyString[0] == '[' && len(keyString) > 1) {
 				// Check for mouse sequence patterns
