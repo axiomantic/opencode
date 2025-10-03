@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/v2/spinner"
 	tea "github.com/charmbracelet/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -51,6 +52,7 @@ type messagesComponent struct {
 	clipboard          []string
 	cache              *PartCache
 	loading            bool
+	loadingSpinner     spinner.Model
 	showToolDetails    bool
 	showThinkingBlocks bool
 	rendering          bool
@@ -61,7 +63,6 @@ type messagesComponent struct {
 	selection          *selection
 	messagePositions   map[string]int // map message ID to line position
 	animating          bool
-	lastMouseWheel     time.Time // Rate limiting for mouse wheel events
 }
 
 type selection struct {
@@ -105,12 +106,16 @@ type ToggleThinkingBlocksMsg struct{}
 type shimmerTickMsg struct{}
 
 func (m *messagesComponent) Init() tea.Cmd {
-	return tea.Batch(m.viewport.Init())
+	return tea.Batch(m.viewport.Init(), m.loadingSpinner.Tick)
 }
 
 func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.loadingSpinner, cmd = m.loadingSpinner.Update(msg)
+		return m, cmd
 	case shimmerTickMsg:
 		if !m.app.HasAnimatingWork() {
 			m.animating = false
@@ -228,21 +233,9 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.renderView()
 		}
 	case tea.MouseWheelMsg:
-		// Rate limit mouse wheel events to prevent overwhelming the system
-		// and escape sequences leaking through
-		now := time.Now()
-		if now.Sub(m.lastMouseWheel) < 10*time.Millisecond {
-			// Drop events that are too frequent
-			return m, nil
-		}
-		m.lastMouseWheel = now
-
-		// Consume mouse wheel events when rendering to prevent escape sequences
-		// from appearing in the input during heavy load
-		if m.rendering || m.loading {
-			return m, nil
-		}
-		// Pass through to viewport via default handler at the end
+		// Pass scroll events through to viewport - no rate limiting needed
+		// Viewport handles its own adaptive scrolling and the velocity threshold
+		// prevents momentum lag without causing input delay
 
 	case tea.WindowSizeMsg:
 		effectiveWidth := msg.Width - 4
@@ -1135,16 +1128,12 @@ func (m *messagesComponent) View() string {
 	bgColor := t.Background()
 
 	if m.loading {
-		loadingText := styles.NewStyle().
-			Foreground(t.TextMuted()).
-			Render("Reflowing text...")
-
 		return lipgloss.Place(
 			m.width,
 			m.height,
 			lipgloss.Center,
 			lipgloss.Center,
-			loadingText,
+			m.loadingSpinner.View(),
 			styles.WhitespaceStyle(bgColor),
 		)
 	}
@@ -1462,6 +1451,13 @@ func NewMessagesComponent(app *app.App) MessagesComponent {
 		showThinkingBlocks = *app.State.ShowThinkingBlocks
 	}
 
+	s := spinner.New(
+		spinner.WithSpinner(spinner.Dot),
+		spinner.WithStyle(
+			styles.NewStyle().Foreground(t.TextMuted()).Lipgloss(),
+		),
+	)
+
 	return &messagesComponent{
 		app:                app,
 		viewport:           vp,
@@ -1470,5 +1466,6 @@ func NewMessagesComponent(app *app.App) MessagesComponent {
 		cache:              NewPartCache(),
 		tail:               true,
 		messagePositions:   make(map[string]int),
+		loadingSpinner:     s,
 	}
 }
