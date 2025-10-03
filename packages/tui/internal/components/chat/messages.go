@@ -1380,7 +1380,7 @@ func NewMessagesComponent(app *app.App) MessagesComponent {
 	if app.ScrollSpeed > 0 {
 		vp.MouseWheelDelta = app.ScrollSpeed
 	} else {
-		vp.MouseWheelDelta = 2
+		vp.MouseWheelDelta = 3
 	}
 
 	vp.ShowScrollbar = app.Scrollbar
