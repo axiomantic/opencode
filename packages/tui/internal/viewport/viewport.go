@@ -1065,6 +1065,12 @@ func (m *Model) updateAdaptiveScrollTimingWithEvent(isScrollEvent bool) {
 	m.scrollState.currentVelocity = m.scrollState.currentVelocity*velocitySmoothingFactor +
 		velocityTarget*(1-velocitySmoothingFactor)
 
+	// Snap to base velocity when very close to prevent lingering momentum
+	const velocityThreshold = 0.05
+	if math.Abs(m.scrollState.currentVelocity-baseVelocity) < velocityThreshold {
+		m.scrollState.currentVelocity = baseVelocity
+	}
+
 	// Ensure bounds
 	m.scrollState.currentVelocity = math.Max(baseVelocity,
 		math.Min(m.AdaptiveConfig.MaxMultiplier, m.scrollState.currentVelocity))

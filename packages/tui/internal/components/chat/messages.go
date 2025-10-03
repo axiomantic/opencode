@@ -362,18 +362,15 @@ func (m *messagesComponent) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clipboard = msg.clipboard
 		m.loading = false
 		m.messagePositions = msg.messagePositions
-		m.tail = m.viewport.AtBottom()
-
-		// Preserve scroll across reflow
-		// if the user was at bottom, keep following; otherwise restore the previous offset.
-		wasAtBottom := m.viewport.AtBottom()
+		shouldFollowBottom := m.viewport.AtBottom()
 		prevYOffset := m.viewport.YOffset
 		m.viewport = msg.viewport
-		if wasAtBottom {
+		if shouldFollowBottom {
 			m.viewport.GotoBottom()
 		} else {
 			m.viewport.YOffset = prevYOffset
 		}
+		m.tail = m.viewport.AtBottom()
 
 		m.header = msg.header
 		if m.dirty {
