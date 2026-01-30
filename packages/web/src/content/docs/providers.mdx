@@ -1740,9 +1740,9 @@ Some useful routing options:
 
 ---
 
-## Provider Inheritance
+## Provider Profiles
 
-You can create multiple configurations of the same provider using the `inherit` field. This is useful when you need to use the same provider with different credentials, such as separate work and personal accounts.
+You can create multiple configurations of the same provider using the `extends` field. This is useful when you need to use the same provider with different credentials, such as separate work and personal accounts.
 
 ### Multiple Accounts
 
@@ -1753,14 +1753,14 @@ To use multiple accounts for the same provider (e.g., two Anthropic API keys for
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "anthropic-work": {
-      "inherit": "anthropic",
+      "extends": "anthropic",
       "name": "Anthropic (Work)",
       "options": {
         "apiKey": "{env:ANTHROPIC_WORK_KEY}"
       }
     },
     "anthropic-personal": {
-      "inherit": "anthropic",
+      "extends": "anthropic",
       "name": "Anthropic (Personal)",
       "options": {
         "apiKey": "{env:ANTHROPIC_PERSONAL_KEY}"
@@ -1792,22 +1792,22 @@ Once you have multiple provider configurations, you can select which one to use 
 
 ### How It Works
 
-When you use `inherit`:
+When you use `extends`:
 
 1. **Models are cloned** - All models from the base provider are available under the new provider ID
 2. **Custom name** - Use the `name` field to set a display name for the model picker
-3. **Options merge** - The `options` you specify (like `apiKey`) are applied to the inherited provider
-4. **Independent provider** - The inherited provider appears as a separate entry in the model picker
+3. **Options merge** - The `options` you specify (like `apiKey`) are applied to the extended provider
+4. **Independent provider** - The extended provider appears as a separate entry in the model picker
 
 :::tip
-Both the base provider and inherited providers can coexist. If you have `ANTHROPIC_API_KEY` set and also define `anthropic-work`, you'll see both in the model picker.
+Both the base provider and extended providers can coexist. If you have `ANTHROPIC_API_KEY` set and also define `anthropic-work`, you'll see both in the model picker.
 :::
 
-### Inherit Options
+### Extends Options
 
 | Option | Description |
 |--------|-------------|
-| `inherit` | The provider ID to inherit from (e.g., `"anthropic"`, `"openai"`) |
+| `extends` | The provider ID to extend from (e.g., `"anthropic"`, `"openai"`) |
 | `name` | Display name for the provider in the model picker |
 | `options.apiKey` | API key for this provider configuration |
 | `options.baseURL` | Custom base URL (optional) |

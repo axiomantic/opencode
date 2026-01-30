@@ -712,14 +712,14 @@ export namespace Provider {
       }
     }
 
-    // Process inherit directives from config - clone base providers with new IDs
+    // Process extends directives from config - clone base providers with new IDs
     for (const [providerID, providerConfig] of configProviders) {
-      if (!providerConfig.inherit) continue
+      if (!providerConfig.extends) continue
       if (!isProviderAllowed(providerID)) continue
 
-      const base = database[providerConfig.inherit]
+      const base = database[providerConfig.extends]
       if (!base) {
-        log.warn(`inherit: base provider '${providerConfig.inherit}' not found for '${providerID}'`)
+        log.warn(`extends: base provider '${providerConfig.extends}' not found for '${providerID}'`)
         continue
       }
 
