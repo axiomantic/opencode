@@ -184,9 +184,7 @@ export const SettingsProviders: Component = () => {
   }
 
   const openEditDialog = (item: ProviderInfo, baseType: string, baseName: string) => {
-    dialog.show(() => (
-      <DialogProfile mode="edit" providerType={baseType} providerName={baseName} profileId={item.id} />
-    ))
+    dialog.show(() => <DialogProfile mode="edit" providerType={baseType} providerName={baseName} profileId={item.id} />)
   }
 
   const openAddProfileDialog = (baseType: string, baseName: string) => {
@@ -285,20 +283,18 @@ export const SettingsProviders: Component = () => {
                       )}
                     </For>
 
-                    {/* Add profile button */}
-                    <Show when={source(group.base) !== "env"}>
-                      <div class="pl-8 py-2 border-b border-border-weak-base last:border-none">
-                        <Button
-                          size="small"
-                          variant="ghost"
-                          icon="plus-small"
-                          class="text-text-interactive-base"
-                          onClick={() => openAddProfileDialog(group.base.id, group.base.name)}
-                        >
-                          Add profile
-                        </Button>
-                      </div>
-                    </Show>
+                    {/* Add profile button - available for all connected providers */}
+                    <div class="pl-8 py-2 border-b border-border-weak-base last:border-none">
+                      <Button
+                        size="small"
+                        variant="ghost"
+                        icon="plus-small"
+                        class="text-text-interactive-base"
+                        onClick={() => openAddProfileDialog(group.base.id, group.base.name)}
+                      >
+                        Add profile
+                      </Button>
+                    </div>
                   </>
                 )}
               </For>
