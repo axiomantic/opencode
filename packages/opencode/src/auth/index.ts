@@ -67,4 +67,27 @@ export namespace Auth {
     delete data[key]
     await Bun.write(file, JSON.stringify(data, null, 2), { mode: 0o600 })
   }
+
+  const MAX_EXTENDS_DEPTH = 10
+
+  export async function resolve(
+    providerID: string,
+    config: { provider?: Record<string, { extends?: string }> },
+  ): Promise<Info | undefined> {
+    let current = providerID
+    let depth = 0
+
+    while (depth < MAX_EXTENDS_DEPTH) {
+      const auth = await get(current)
+      if (auth) return auth
+
+      const provider = config.provider?.[current]
+      if (!provider?.extends) return undefined
+
+      current = provider.extends
+      depth++
+    }
+
+    return undefined
+  }
 }
