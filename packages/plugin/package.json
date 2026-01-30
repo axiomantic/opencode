@@ -22,7 +22,8 @@
   "devDependencies": {
     "@tsconfig/node22": "catalog:",
     "@types/node": "catalog:",
+    "@typescript/native-preview": "catalog:",
     "typescript": "catalog:",
-    "@typescript/native-preview": "catalog:"
+    "zod-to-json-schema": "3.25.1"
   }
 }
