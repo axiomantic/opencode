@@ -1740,6 +1740,81 @@ Some useful routing options:
 
 ---
 
+## Provider Inheritance
+
+You can create multiple configurations of the same provider using the `inherit` field. This is useful when you need to use the same provider with different credentials, such as separate work and personal accounts.
+
+### Multiple Accounts
+
+To use multiple accounts for the same provider (e.g., two Anthropic API keys for work and personal use):
+
+```json title="~/.config/opencode/opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "anthropic-work": {
+      "inherit": "anthropic",
+      "name": "Anthropic (Work)",
+      "options": {
+        "apiKey": "{env:ANTHROPIC_WORK_KEY}"
+      }
+    },
+    "anthropic-personal": {
+      "inherit": "anthropic",
+      "name": "Anthropic (Personal)",
+      "options": {
+        "apiKey": "{env:ANTHROPIC_PERSONAL_KEY}"
+      }
+    }
+  }
+}
+```
+
+This creates two new providers (`anthropic-work` and `anthropic-personal`) that inherit all models from the base `anthropic` provider but use different API keys.
+
+### Per-Project Selection
+
+Once you have multiple provider configurations, you can select which one to use in each project:
+
+```json title="~/work/project/opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic-work/claude-sonnet-4-20250514"
+}
+```
+
+```json title="~/personal/project/opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic-personal/claude-sonnet-4-20250514"
+}
+```
+
+### How It Works
+
+When you use `inherit`:
+
+1. **Models are cloned** - All models from the base provider are available under the new provider ID
+2. **Custom name** - Use the `name` field to set a display name for the model picker
+3. **Options merge** - The `options` you specify (like `apiKey`) are applied to the inherited provider
+4. **Independent provider** - The inherited provider appears as a separate entry in the model picker
+
+:::tip
+Both the base provider and inherited providers can coexist. If you have `ANTHROPIC_API_KEY` set and also define `anthropic-work`, you'll see both in the model picker.
+:::
+
+### Inherit Options
+
+| Option | Description |
+|--------|-------------|
+| `inherit` | The provider ID to inherit from (e.g., `"anthropic"`, `"openai"`) |
+| `name` | Display name for the provider in the model picker |
+| `options.apiKey` | API key for this provider configuration |
+| `options.baseURL` | Custom base URL (optional) |
+| `options.timeout` | Request timeout in milliseconds (optional) |
+
+---
+
 ## Custom provider
 
 To add any **OpenAI-compatible** provider that's not listed in the `/connect` command:

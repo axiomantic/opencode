@@ -862,6 +862,12 @@ export namespace Config {
 
   export const Provider = ModelsDev.Provider.partial()
     .extend({
+      inherit: z
+        .string()
+        .optional()
+        .describe(
+          "Base provider ID to inherit models from. The inherited provider's models will be cloned under this provider's ID with custom credentials.",
+        ),
       whitelist: z.array(z.string()).optional(),
       blacklist: z.array(z.string()).optional(),
       models: z

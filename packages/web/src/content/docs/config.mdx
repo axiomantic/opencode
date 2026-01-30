@@ -262,6 +262,34 @@ You can also configure [local models](/docs/models#local). [Learn more](/docs/mo
 
 ---
 
+#### Provider Inheritance
+
+Use the `inherit` field to create multiple configurations of the same provider with different credentials. This is useful for managing work and personal accounts separately.
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "anthropic-work": {
+      "inherit": "anthropic",
+      "name": "Anthropic (Work)",
+      "options": {
+        "apiKey": "{env:ANTHROPIC_WORK_KEY}"
+      }
+    }
+  }
+}
+```
+
+- `inherit` - The base provider ID to inherit models from
+- `name` - Display name for the provider in the model picker
+
+The inherited provider will have all models from the base provider available under the new provider ID (e.g., `anthropic-work/claude-sonnet-4-20250514`).
+
+[Learn more about provider inheritance](/docs/providers#provider-inheritance).
+
+---
+
 #### Provider-Specific Options
 
 Some providers support additional configuration options beyond the generic `timeout` and `apiKey` settings.
