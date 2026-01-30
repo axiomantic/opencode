@@ -14,8 +14,14 @@ import type {
 
 import type { BunShell } from "./shell"
 import { type ToolDefinition } from "./tool"
+import type { ToolsBridge } from "./tools"
+import type { McpBridge } from "./mcp"
 
 export * from "./tool"
+export * from "./errors"
+export * from "./tools"
+export * from "./mcp"
+export * from "./helpers"
 
 export type ProviderContext = {
   source: "env" | "config" | "custom" | "api"
@@ -30,6 +36,8 @@ export type PluginInput = {
   worktree: string
   serverUrl: URL
   $: BunShell
+  tools: ToolsBridge
+  mcp: McpBridge
 }
 
 export type Plugin = (input: PluginInput) => Promise<Hooks>

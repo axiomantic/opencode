@@ -11,6 +11,8 @@ import { CodexAuthPlugin } from "./codex"
 import { Session } from "../session"
 import { NamedError } from "@opencode-ai/util/error"
 import { CopilotAuthPlugin } from "./copilot"
+import { createToolsBridge } from "./tools-bridge"
+import { createMcpBridge } from "./mcp-bridge"
 
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
@@ -35,6 +37,8 @@ export namespace Plugin {
       directory: Instance.directory,
       serverUrl: Server.url(),
       $: Bun.$,
+      tools: createToolsBridge({ pluginName: "internal" }),
+      mcp: createMcpBridge(),
     }
 
     for (const plugin of INTERNAL_PLUGINS) {
