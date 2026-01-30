@@ -712,6 +712,30 @@ export namespace Provider {
       }
     }
 
+    // Process inherit directives from config - clone base providers with new IDs
+    for (const [providerID, providerConfig] of configProviders) {
+      if (!providerConfig.inherit) continue
+      if (!isProviderAllowed(providerID)) continue
+
+      const base = database[providerConfig.inherit]
+      if (!base) {
+        log.warn(`inherit: base provider '${providerConfig.inherit}' not found for '${providerID}'`)
+        continue
+      }
+
+      database[providerID] = {
+        ...base,
+        id: providerID,
+        name: providerConfig.name ?? base.name,
+        source: "config",
+        models: mapValues(base.models, (model) => ({
+          ...model,
+          providerID,
+          api: { ...model.api },
+        })),
+      }
+    }
+
     function mergeProvider(providerID: string, provider: Partial<Info>) {
       const existing = providers[providerID]
       if (existing) {

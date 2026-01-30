@@ -1493,6 +1493,10 @@ export type ProviderConfig = {
       }
     }
   }
+  /**
+   * Base provider ID to inherit models from. The inherited provider's models will be cloned under this provider's ID with custom credentials.
+   */
+  inherit?: string
   whitelist?: Array<string>
   blacklist?: Array<string>
   options?: {
