@@ -1,0 +1,324 @@
+---
+title: "Plugins"
+description: "Extend OpenCode with custom tools and MCP integrations"
+---
+
+# Building Plugins
+
+Plugins extend OpenCode with custom tools, hooks, and integrations. The `@opencode-ai/plugin` package provides full access to OpenCode's tool system and MCP servers.
+
+## Installation
+
+```bash
+bun add @opencode-ai/plugin
+```
+
+## Basic Plugin
+
+A plugin is an async function that receives context and returns hooks:
+
+```typescript
+import { type Plugin } from "@opencode-ai/plugin"
+
+export const MyPlugin: Plugin = async (ctx) => {
+  return {
+    tool: {
+      greet: {
+        description: "Say hello",
+        args: {},
+        async execute() {
+          return "Hello from my plugin!"
+        },
+      },
+    },
+  }
+}
+
+export default MyPlugin
+```
+
+## Plugin Context
+
+Every plugin receives a context object:
+
+| Property    | Description              |
+| ----------- | ------------------------ |
+| `client`    | SDK client for API calls |
+| `project`   | Current project info     |
+| `directory` | Project root directory   |
+| `tools`     | Call any registered tool |
+| `mcp`       | Manage MCP servers       |
+| `$`         | Shell for commands       |
+
+## Calling Tools
+
+The `tools` bridge lets plugins call any tool in the system.
+
+### Basic Usage
+
+```typescript
+export const MyPlugin: Plugin = async (ctx) => {
+  return {
+    tool: {
+      countFiles: {
+        description: "Count TypeScript files",
+        args: {},
+        async execute() {
+          const result = await ctx.tools.call("glob", {
+            pattern: "**/*.ts",
+          })
+          const files = result.output as string[]
+          return `Found ${files.length} files`
+        },
+      },
+    },
+  }
+}
+```
+
+### Available Methods
+
+```typescript
+// Call a tool
+const result = await ctx.tools.call("read", { filePath: "/path/to/file" })
+
+// Call with timeout
+await ctx.tools.call("bash", { command: "npm test" }, { timeout: 60000 })
+
+// List all tools
+const tools = await ctx.tools.list()
+
+// Check if tool exists
+if (await ctx.tools.has("my-mcp-server_search")) {
+  // Use the tool
+}
+```
+
+### Tool Sources
+
+Tools come from three sources:
+
+- **builtin**: Core tools (read, write, bash, glob, grep, etc.)
+- **mcp**: Tools from connected MCP servers
+- **plugin**: Tools from other plugins
+
+## MCP Integration
+
+Plugins can add, manage, and use MCP servers programmatically.
+
+### Adding Servers
+
+```typescript
+import { mcpServer } from "@opencode-ai/plugin"
+
+export const MyPlugin: Plugin = async (ctx) => {
+  // Add a local MCP server
+  await ctx.mcp.addServer(
+    "my-tools",
+    mcpServer.local({
+      command: ["npx", "-y", "@modelcontextprotocol/server-everything"],
+    }),
+  )
+
+  // Add a remote MCP server
+  await ctx.mcp.addServer(
+    "remote",
+    mcpServer.remote({
+      url: "https://mcp.example.com/sse",
+      headers: { Authorization: "Bearer token" },
+    }),
+  )
+
+  return {
+    /* hooks */
+  }
+}
+```
+
+### Server Management
+
+```typescript
+// Check connection status
+const status = await ctx.mcp.status()
+// { "my-tools": { status: "connected" } }
+
+// Connect/disconnect
+await ctx.mcp.connect("my-tools")
+await ctx.mcp.disconnect("my-tools")
+
+// Remove server
+await ctx.mcp.removeServer("my-tools")
+```
+
+### MCP Resources and Prompts
+
+```typescript
+// Read a resource
+const content = await ctx.mcp.readResource("server", "file:///path")
+
+// Get a prompt template
+const prompt = await ctx.mcp.getPrompt("server", "review-code", {
+  language: "typescript",
+})
+```
+
+## Helper Functions
+
+### mcpTool
+
+Expose an MCP tool as a plugin tool:
+
+```typescript
+import { mcpTool } from "@opencode-ai/plugin"
+
+export const MyPlugin: Plugin = async (ctx) => {
+  return {
+    tool: {
+      search: mcpTool(ctx, {
+        server: "search-server",
+        tool: "search",
+        description: "Search the codebase",
+        transformArgs: (args) => ({ ...args, limit: 10 }),
+      }),
+    },
+  }
+}
+```
+
+### mcpServer
+
+Create server configurations:
+
+```typescript
+import { mcpServer } from "@opencode-ai/plugin"
+
+// Local server (stdio)
+mcpServer.local({
+  command: ["python", "-m", "my_server"],
+  environment: { API_KEY: "xxx" },
+  timeout: 60000,
+})
+
+// Remote server (SSE) with OAuth
+mcpServer.remote({
+  url: "https://api.example.com/mcp",
+  oauth: { clientId: "xxx", scope: "read" },
+})
+```
+
+## Error Handling
+
+The SDK provides typed errors:
+
+```typescript
+import { ToolNotFoundError, ToolPermissionError, McpNotConnectedError, McpTimeoutError } from "@opencode-ai/plugin"
+
+try {
+  await ctx.tools.call("unknown", {})
+} catch (e) {
+  if (e instanceof ToolNotFoundError) {
+    console.log(`Available tools: ${e.availableTools.join(", ")}`)
+  }
+}
+```
+
+| Error                  | Cause                   |
+| ---------------------- | ----------------------- |
+| `ToolNotFoundError`    | Tool doesn't exist      |
+| `ToolPermissionError`  | Plugin lacks permission |
+| `ToolCycleError`       | Circular call detected  |
+| `McpNotConnectedError` | Server not connected    |
+| `McpTimeoutError`      | Call timed out          |
+| `McpAuthError`         | Auth required           |
+
+## Permissions
+
+Restrict plugin tool access via configuration:
+
+```json
+{
+  "plugins": {
+    "my-plugin": {
+      "permissions": {
+        "tools": {
+          "allow": ["read", "glob"],
+          "deny": ["bash", "write"]
+        }
+      }
+    }
+  }
+}
+```
+
+## Event Hooks
+
+React to OpenCode events:
+
+```typescript
+export const MyPlugin: Plugin = async (ctx) => {
+  return {
+    event: async ({ event }) => {
+      if (event.type === "session.created") {
+        console.log("New session started")
+      }
+    },
+  }
+}
+```
+
+## Complete Example
+
+```typescript
+import { type Plugin, mcpTool, mcpServer } from "@opencode-ai/plugin"
+import { z } from "zod"
+
+export const CodeAnalyzer: Plugin = async (ctx) => {
+  // Add analysis server
+  await ctx.mcp.addServer(
+    "analyzer",
+    mcpServer.local({
+      command: ["npx", "code-analyzer-mcp"],
+    }),
+  )
+
+  return {
+    tool: {
+      // Custom tool using built-in tools
+      fileStats: {
+        description: "Get file statistics",
+        args: {
+          pattern: z.string().default("**/*.ts"),
+        },
+        async execute(args) {
+          const glob = await ctx.tools.call("glob", { pattern: args.pattern })
+          const files = glob.output as string[]
+
+          let totalLines = 0
+          for (const file of files.slice(0, 10)) {
+            const content = await ctx.tools.call("read", { filePath: file })
+            totalLines += (content.output as string).split("\n").length
+          }
+
+          return `${files.length} files, ~${totalLines} lines (sampled)`
+        },
+      },
+
+      // Wrapped MCP tool
+      analyze: mcpTool(ctx, {
+        server: "analyzer",
+        tool: "analyze",
+        description: "Run code analysis",
+      }),
+    },
+
+    event: async ({ event }) => {
+      if (event.type === "session.created") {
+        const status = await ctx.mcp.status()
+        console.log("Analyzer status:", status.analyzer?.status)
+      }
+    },
+  }
+}
+
+export default CodeAnalyzer
+```

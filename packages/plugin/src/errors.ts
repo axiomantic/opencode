@@ -1,5 +1,5 @@
 export class ToolNotFoundError extends Error {
-  name = "ToolNotFoundError" as const
+  override name = "ToolNotFoundError" as const
   constructor(
     public toolId: string,
     public availableTools: string[],
@@ -11,7 +11,7 @@ export class ToolNotFoundError extends Error {
 }
 
 export class ToolPermissionError extends Error {
-  name = "ToolPermissionError" as const
+  override name = "ToolPermissionError" as const
   constructor(
     public toolId: string,
     public pluginName: string,
@@ -21,21 +21,21 @@ export class ToolPermissionError extends Error {
 }
 
 export class ToolCycleError extends Error {
-  name = "ToolCycleError" as const
+  override name = "ToolCycleError" as const
   constructor(public callStack: string[]) {
     super(`Circular tool call detected: ${callStack.join(" -> ")}`)
   }
 }
 
 export class McpNotConnectedError extends Error {
-  name = "McpNotConnectedError" as const
+  override name = "McpNotConnectedError" as const
   constructor(public server: string) {
     super(`MCP server "${server}" is not connected`)
   }
 }
 
 export class McpTimeoutError extends Error {
-  name = "McpTimeoutError" as const
+  override name = "McpTimeoutError" as const
   constructor(
     public server: string,
     public tool: string,
@@ -46,7 +46,7 @@ export class McpTimeoutError extends Error {
 }
 
 export class McpAuthError extends Error {
-  name = "McpAuthError" as const
+  override name = "McpAuthError" as const
   constructor(public server: string) {
     super(`MCP server "${server}" requires authentication. Run: opencode mcp ${server} auth`)
   }
