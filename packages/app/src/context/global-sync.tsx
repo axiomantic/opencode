@@ -1067,6 +1067,25 @@ function createGlobalSync() {
     setStore("icon", value)
   }
 
+  function sortedSessions(directory: string) {
+    const [store] = child(directory, { bootstrap: false })
+    const now = Date.now()
+    const oneMinuteAgo = now - 60 * 1000
+    return store.session
+      .filter((session) => session.directory === store.path.directory)
+      .filter((session) => !session.parentID && !session.time?.archived)
+      .toSorted((a, b) => {
+        const aUpdated = a.time.updated ?? a.time.created
+        const bUpdated = b.time.updated ?? b.time.created
+        const aRecent = aUpdated > oneMinuteAgo
+        const bRecent = bUpdated > oneMinuteAgo
+        if (aRecent && bRecent) return a.id.localeCompare(b.id)
+        if (aRecent && !bRecent) return -1
+        if (!aRecent && bRecent) return 1
+        return bUpdated - aUpdated
+      })
+  }
+
   return {
     data: globalStore,
     set: setGlobalStore,
@@ -1078,6 +1097,7 @@ function createGlobalSync() {
     },
     child,
     bootstrap,
+    sortedSessions,
     updateConfig: (config: Config) => {
       setGlobalStore("reload", "pending")
       return globalSDK.client.global.config.update({ config }).finally(() => {

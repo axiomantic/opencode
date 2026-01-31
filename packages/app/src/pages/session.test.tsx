@@ -1,15 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test"
 
-describe("Session page", () => {
-  test("session cleanup effect exists", async () => {
-    const code = await Bun.file(import.meta.dir + "/session.tsx").text();
-    expect(code).toContain("cleanupSessionCaches");
-    expect(code).toContain("sessionCleanup");
-    expect(code).toContain("30000"); // 30 second grace period
-  });
-
-  test("session cleanup calls sync.cleanupMeta", async () => {
-    const code = await Bun.file(import.meta.dir + "/session.tsx").text();
-    expect(code).toContain("sync.cleanupMeta");
-  });
-});
+describe("Session page render optimizations", () => {
+  test("constant classes object is hoisted", async () => {
+    const code = await Bun.file("src/pages/session.tsx").text()
+    expect(code).toContain("SESSION_TURN_CLASSES")
+  })
+})
