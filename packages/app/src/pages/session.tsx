@@ -70,6 +70,7 @@ import {
 } from "@/components/session"
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
+import { createScrollSpy } from "./session/scroll-spy"
 
 type DiffStyle = "unified" | "split"
 
@@ -1381,6 +1382,8 @@ export default function Page() {
   let scrollSpyFrame: number | undefined
   let scrollSpyTarget: HTMLDivElement | undefined
 
+  const scrollSpy = createScrollSpy({ useObserver: true })
+
   const anchor = (id: string) => `message-${id}`
 
   const setScrollRef = (el: HTMLDivElement | undefined) => {
@@ -1611,6 +1614,11 @@ export default function Page() {
   }
 
   const getActiveMessageId = (container: HTMLDivElement) => {
+    // Use optimized scroll-spy if available
+    if (scrollSpy) {
+      return scrollSpy.activeId()
+    }
+
     const rect = container.getBoundingClientRect()
     if (!rect.width || !rect.height) return
 
