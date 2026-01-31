@@ -693,11 +693,27 @@ export default function Layout(props: ParentProps) {
   const PREFETCH_MAX_SESSIONS_PER_DIR = 10
   const prefetchedByDir = new Map<string, Map<string, true>>()
 
+  const MAX_PREFETCH_DIRS = 20
+
+  const cleanupPrefetch = () => {
+    if (prefetchedByDir.size <= MAX_PREFETCH_DIRS) return
+
+    // Get directories sorted by least recently added
+    const dirs = Array.from(prefetchedByDir.keys())
+    const toRemove = dirs.slice(0, dirs.length - MAX_PREFETCH_DIRS)
+
+    for (const dir of toRemove) {
+      prefetchQueues.delete(dir)
+      prefetchedByDir.delete(dir)
+    }
+  }
+
   const lruFor = (directory: string) => {
     const existing = prefetchedByDir.get(directory)
     if (existing) return existing
     const created = new Map<string, true>()
     prefetchedByDir.set(directory, created)
+    cleanupPrefetch()
     return created
   }
 
