@@ -71,7 +71,6 @@ import {
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
 import { VirtualizedMessageList, type VirtualizedMessageListHandle } from "@/components/virtualized-message-list"
-import { perfFlags } from "@/utils/perf-flags"
 
 type DiffStyle = "unified" | "split"
 
@@ -1494,8 +1493,7 @@ export default function Page() {
       scheduleTurnBackfill()
 
       requestAnimationFrame(() => {
-        // Use virtualized scroll when enabled
-        if (perfFlags.messageVirtualization && virtualizedListRef) {
+        if (virtualizedListRef) {
           const rendered = renderedUserMessages()
           const idx = rendered.findIndex((m) => m.id === message.id)
           if (idx !== -1) {
@@ -1521,8 +1519,7 @@ export default function Page() {
       return
     }
 
-    // Use virtualized scroll when enabled
-    if (perfFlags.messageVirtualization && virtualizedListRef) {
+    if (virtualizedListRef) {
       const rendered = renderedUserMessages()
       const idx = rendered.findIndex((m) => m.id === message.id)
       if (idx !== -1) {
@@ -2030,79 +2027,36 @@ export default function Page() {
                               </Button>
                             </div>
                           </Show>
-                          <Show
-                            when={perfFlags.messageVirtualization}
-                            fallback={
-                              <For each={renderedUserMessages()}>
-                                {(message) => {
-                                  if (import.meta.env.DEV) {
-                                    onMount(() => {
-                                      const id = params.id
-                                      if (!id) return
-                                      navMark({ dir: params.dir, to: id, name: "session:first-turn-mounted" })
-                                    })
-                                  }
-
-                                  return (
-                                    <div
-                                      id={anchor(message.id)}
-                                      data-message-id={message.id}
-                                      classList={{
-                                        "min-w-0 w-full max-w-full": true,
-                                        "md:max-w-200": centered(),
-                                      }}
-                                    >
-                                      <SessionTurn
-                                        sessionID={params.id!}
-                                        messageID={message.id}
-                                        lastUserMessageID={lastUserMessage()?.id}
-                                        stepsExpanded={store.expanded[message.id] ?? false}
-                                        onStepsExpandedToggle={() =>
-                                          setStore("expanded", message.id, (open: boolean | undefined) => !open)
-                                        }
-                                        classes={{
-                                          root: "min-w-0 w-full relative",
-                                          content: "flex flex-col justify-between !overflow-visible",
-                                          container: "w-full px-4 md:px-6",
-                                        }}
-                                      />
-                                    </div>
-                                  )
+                          <VirtualizedMessageList
+                            ref={(r) => (virtualizedListRef = r)}
+                            messages={renderedUserMessages()}
+                            overscan={4}
+                            renderMessage={(message) => (
+                              <div
+                                id={anchor(message.id)}
+                                data-message-id={message.id}
+                                classList={{
+                                  "min-w-0 w-full max-w-full": true,
+                                  "md:max-w-200": centered(),
                                 }}
-                              </For>
-                            }
-                          >
-                            <VirtualizedMessageList
-                              ref={(r) => (virtualizedListRef = r)}
-                              messages={renderedUserMessages()}
-                              overscan={4}
-                              renderMessage={(message) => (
-                                <div
-                                  id={anchor(message.id)}
-                                  data-message-id={message.id}
-                                  classList={{
-                                    "min-w-0 w-full max-w-full": true,
-                                    "md:max-w-200": centered(),
+                              >
+                                <SessionTurn
+                                  sessionID={params.id!}
+                                  messageID={message.id}
+                                  lastUserMessageID={lastUserMessage()?.id}
+                                  stepsExpanded={store.expanded[message.id] ?? false}
+                                  onStepsExpandedToggle={() =>
+                                    setStore("expanded", message.id, (open: boolean | undefined) => !open)
+                                  }
+                                  classes={{
+                                    root: "min-w-0 w-full relative",
+                                    content: "flex flex-col justify-between !overflow-visible",
+                                    container: "w-full px-4 md:px-6",
                                   }}
-                                >
-                                  <SessionTurn
-                                    sessionID={params.id!}
-                                    messageID={message.id}
-                                    lastUserMessageID={lastUserMessage()?.id}
-                                    stepsExpanded={store.expanded[message.id] ?? false}
-                                    onStepsExpandedToggle={() =>
-                                      setStore("expanded", message.id, (open: boolean | undefined) => !open)
-                                    }
-                                    classes={{
-                                      root: "min-w-0 w-full relative",
-                                      content: "flex flex-col justify-between !overflow-visible",
-                                      container: "w-full px-4 md:px-6",
-                                    }}
-                                  />
-                                </div>
-                              )}
-                            />
-                          </Show>
+                                />
+                              </div>
+                            )}
+                          />
                         </div>
                       </div>
                     </div>
