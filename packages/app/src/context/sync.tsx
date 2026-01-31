@@ -289,6 +289,40 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             }),
           )
         },
+        cleanupSessionCaches(sessionID: string) {
+          const [store, setStore] = current()
+          if (!sessionID) return
+
+          const hasAny =
+            store.message[sessionID] !== undefined ||
+            store.session_diff[sessionID] !== undefined ||
+            store.todo[sessionID] !== undefined ||
+            store.permission[sessionID] !== undefined ||
+            store.question[sessionID] !== undefined ||
+            store.session_status[sessionID] !== undefined
+
+          if (!hasAny) return
+
+          setStore(
+            produce((draft) => {
+              const messages = draft.message[sessionID]
+              if (messages) {
+                for (const message of messages) {
+                  const id = message?.id
+                  if (!id) continue
+                  delete draft.part[id]
+                }
+              }
+
+              delete draft.message[sessionID]
+              delete draft.session_diff[sessionID]
+              delete draft.todo[sessionID]
+              delete draft.permission[sessionID]
+              delete draft.question[sessionID]
+              delete draft.session_status[sessionID]
+            }),
+          )
+        },
       },
       absolute,
       get directory() {
