@@ -2006,12 +2006,7 @@ export default function Layout(props: ParentProps) {
       pendingRename: false,
     })
     const slug = createMemo(() => base64Encode(props.directory))
-    const sessions = createMemo(() =>
-      workspaceStore.session
-        .filter((session) => session.directory === workspaceStore.path.directory)
-        .filter((session) => !session.parentID && !session.time?.archived)
-        .toSorted(sortSessions(Date.now())),
-    )
+    const sessions = createMemo(() => globalSync.sortedSessions(props.directory))
     const children = createMemo(() => {
       const map = new Map<string, string[]>()
       for (const session of workspaceStore.session) {
@@ -2411,12 +2406,7 @@ export default function Layout(props: ParentProps) {
   const LocalWorkspace = (props: { project: LocalProject; mobile?: boolean }): JSX.Element => {
     const [workspaceStore, setWorkspaceStore] = globalSync.child(props.project.worktree)
     const slug = createMemo(() => base64Encode(props.project.worktree))
-    const sessions = createMemo(() =>
-      workspaceStore.session
-        .filter((session) => session.directory === workspaceStore.path.directory)
-        .filter((session) => !session.parentID && !session.time?.archived)
-        .toSorted(sortSessions(Date.now())),
-    )
+    const sessions = createMemo(() => globalSync.sortedSessions(props.project.worktree))
     const children = createMemo(() => {
       const map = new Map<string, string[]>()
       for (const session of workspaceStore.session) {

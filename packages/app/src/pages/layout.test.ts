@@ -8,4 +8,10 @@ describe("Layout render optimizations", () => {
     // Should use findLast
     expect(code).toContain("findLast")
   })
+
+  test("uses globalSync.sortedSessions for main workspace components", async () => {
+    const code = await Bun.file("src/pages/layout.tsx").text()
+    // Should use globalSync.sortedSessions
+    expect(code).toContain("globalSync.sortedSessions")
+  })
 })
