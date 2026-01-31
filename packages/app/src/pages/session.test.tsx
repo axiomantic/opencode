@@ -7,4 +7,9 @@ describe("Session page", () => {
     expect(code).toContain("sessionCleanup");
     expect(code).toContain("30000"); // 30 second grace period
   });
+
+  test("session cleanup calls sync.cleanupMeta", async () => {
+    const code = await Bun.file(import.meta.dir + "/session.tsx").text();
+    expect(code).toContain("sync.cleanupMeta");
+  });
 });

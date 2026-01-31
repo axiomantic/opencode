@@ -571,6 +571,7 @@ export default function Page() {
           cleanupTimers.delete(oldId)
           if (params.id !== oldId) {
             sync.session.cleanupSessionCaches(oldId)
+            sync.cleanupMeta(oldId)
           }
         }, 30000)
 
