@@ -36,6 +36,7 @@ import { DiffChanges } from "@opencode-ai/ui/diff-changes"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { getFilename } from "@opencode-ai/util/path"
+import { findLast } from "@opencode-ai/util/array"
 import { Session, type Message, type TextPart } from "@opencode-ai/sdk/v2/client"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
@@ -1713,10 +1714,7 @@ export default function Layout(props: ParentProps) {
     const tint = createMemo(() => {
       const messages = sessionStore.message[props.session.id]
       if (!messages) return undefined
-      const user = messages
-        .slice()
-        .reverse()
-        .find((m) => m.role === "user")
+      const user = findLast(messages, (m) => m.role === "user")
       if (!user?.agent) return undefined
 
       const agent = sessionStore.agent.find((a) => a.name === user.agent)
