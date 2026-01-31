@@ -39,4 +39,18 @@ describe("createScrollSpy", () => {
       })
     })
   })
+
+  test("supports IntersectionObserver mode", async () => {
+    await new Promise<void>((resolve) => {
+      createRoot((dispose) => {
+        const spy = createScrollSpy({ useObserver: true })
+
+        expect(spy.observe).toBeDefined()
+        expect(spy.unobserve).toBeDefined()
+
+        dispose()
+        resolve()
+      })
+    })
+  })
 })
