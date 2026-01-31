@@ -73,6 +73,12 @@ import { same } from "@/utils/same"
 
 type DiffStyle = "unified" | "split"
 
+const SESSION_TURN_CLASSES = {
+  root: "min-w-0 w-full relative",
+  content: "flex flex-col justify-between !overflow-visible",
+  container: "w-full px-4 md:px-6",
+} as const
+
 const handoff = {
   prompt: "",
   terminals: [] as string[],
@@ -2032,11 +2038,7 @@ export default function Page() {
                                     onStepsExpandedToggle={() =>
                                       setStore("expanded", message.id, (open: boolean | undefined) => !open)
                                     }
-                                    classes={{
-                                      root: "min-w-0 w-full relative",
-                                      content: "flex flex-col justify-between !overflow-visible",
-                                      container: "w-full px-4 md:px-6",
-                                    }}
+                                    classes={SESSION_TURN_CLASSES}
                                   />
                                 </div>
                               )
