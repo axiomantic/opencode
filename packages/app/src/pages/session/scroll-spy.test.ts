@@ -53,4 +53,17 @@ describe("createScrollSpy", () => {
       })
     })
   })
+
+  test("supports resize observation", async () => {
+    await new Promise<void>((resolve) => {
+      createRoot((dispose) => {
+        const spy = createScrollSpy({ useObserver: true })
+
+        expect(spy.observeResize).toBeDefined()
+
+        dispose()
+        resolve()
+      })
+    })
+  })
 })

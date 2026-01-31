@@ -10,6 +10,8 @@ export function createScrollSpy(options: Options = {}) {
 
   let observer: IntersectionObserver | undefined
 
+  let resizer: ResizeObserver | undefined
+
   if (options.useObserver && typeof IntersectionObserver !== "undefined") {
     observer = new IntersectionObserver(
       (entries) => {
@@ -40,6 +42,14 @@ export function createScrollSpy(options: Options = {}) {
     )
 
     onCleanup(() => observer?.disconnect())
+  }
+
+  if (options.useObserver && typeof ResizeObserver !== "undefined") {
+    resizer = new ResizeObserver(() => {
+      // Positions will be refreshed via IntersectionObserver on next scroll
+    })
+
+    onCleanup(() => resizer?.disconnect())
   }
 
   const findActive = (scrollTop: number) => {
@@ -75,6 +85,14 @@ export function createScrollSpy(options: Options = {}) {
       observer?.unobserve(element)
     },
 
+    observeResize(element: HTMLElement) {
+      resizer?.observe(element)
+    },
+
+    unobserveResize(element: HTMLElement) {
+      resizer?.unobserve(element)
+    },
+
     updateScroll(scrollTop: number) {
       if (observer) return
       const active = findActive(scrollTop)
@@ -94,6 +112,7 @@ export function createScrollSpy(options: Options = {}) {
 
     dispose() {
       observer?.disconnect()
+      resizer?.disconnect()
     },
   }
 }
