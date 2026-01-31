@@ -70,6 +70,8 @@ import {
 } from "@/components/session"
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
+import { perfFlags } from "@/utils/perf-flags"
+import { createScrollSpy } from "./session/scroll-spy"
 
 type DiffStyle = "unified" | "split"
 
@@ -1340,6 +1342,9 @@ export default function Page() {
 
   let scrollSpyFrame: number | undefined
   let scrollSpyTarget: HTMLDivElement | undefined
+
+  // Use optimized scroll-spy when flag is enabled
+  const scrollSpy = perfFlags.scrollSpyOptimized ? createScrollSpy({ useObserver: true }) : undefined
 
   const anchor = (id: string) => `message-${id}`
 
