@@ -1576,6 +1576,11 @@ export default function Page() {
   }
 
   const getActiveMessageId = (container: HTMLDivElement) => {
+    // Use optimized scroll-spy if available
+    if (scrollSpy) {
+      return scrollSpy.activeId()
+    }
+
     const rect = container.getBoundingClientRect()
     if (!rect.width || !rect.height) return
 
