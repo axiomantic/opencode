@@ -44,6 +44,7 @@ import { getFilename } from "@opencode-ai/util/path"
 import { usePlatform } from "./platform"
 import { useLanguage } from "@/context/language"
 import { Persist, persisted } from "@/utils/persist"
+import { perfFlags } from "@/utils/perf-flags"
 
 type ProjectMeta = {
   name?: string
@@ -282,6 +283,21 @@ function createGlobalSync() {
   })
 
   const children: Record<string, [Store<State>, SetStoreFunction<State>]> = {}
+  const MAX_CHILD_STORES = 10
+  const access: string[] = []
+
+  const evict = () => {
+    const oldest = access.shift()
+    if (!oldest) return
+    delete children[oldest]
+  }
+
+  const touch = (directory: string) => {
+    const idx = access.indexOf(directory)
+    if (idx > -1) access.splice(idx, 1)
+    access.push(directory)
+  }
+
   const booting = new Map<string, Promise<void>>()
   const sessionLoads = new Map<string, Promise<void>>()
   const sessionMeta = new Map<string, { limit: number }>()
@@ -348,6 +364,9 @@ function createGlobalSync() {
   function ensureChild(directory: string) {
     if (!directory) console.error("No directory provided")
     if (!children[directory]) {
+      if (perfFlags.childStoreEviction && Object.keys(children).length >= MAX_CHILD_STORES) {
+        evict()
+      }
       const vcs = runWithOwner(owner, () =>
         persisted(
           Persist.workspace(directory, "vcs", ["vcs.v1"]),
@@ -425,6 +444,7 @@ function createGlobalSync() {
     }
     const childStore = children[directory]
     if (!childStore) throw new Error("Failed to create store")
+    if (perfFlags.childStoreEviction) touch(directory)
     return childStore
   }
 
