@@ -323,6 +323,17 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             }),
           )
         },
+        cleanupMeta(sessionID: string) {
+          const directory = sdk.directory
+          const key = keyFor(directory, sessionID)
+          setMeta(
+            produce((draft) => {
+              delete draft.limit[key]
+              delete draft.complete[key]
+              delete draft.loading[key]
+            }),
+          )
+        },
       },
       absolute,
       get directory() {
