@@ -69,7 +69,6 @@ import {
   NewSessionView,
 } from "@/components/session"
 import { navMark, navParams } from "@/utils/perf"
-import { perfFlags } from "@/utils/perf-flags"
 import { same } from "@/utils/same"
 
 type DiffStyle = "unified" | "split"
@@ -560,7 +559,6 @@ export default function Page() {
       () => params.id,
       (newId, oldId) => {
         if (!oldId || oldId === newId) return
-        if (!perfFlags.sessionCleanup) return
 
         // Cancel any existing timer for this session
         const existing = cleanupTimers.get(oldId)
@@ -571,7 +569,7 @@ export default function Page() {
           cleanupTimers.delete(oldId)
           if (params.id !== oldId) {
             sync.session.cleanupSessionCaches(oldId)
-            sync.cleanupMeta(oldId)
+            sync.session.cleanupMeta(oldId)
           }
         }, 30000)
 

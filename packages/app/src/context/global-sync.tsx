@@ -44,7 +44,6 @@ import { getFilename } from "@opencode-ai/util/path"
 import { usePlatform } from "./platform"
 import { useLanguage } from "@/context/language"
 import { Persist, persisted } from "@/utils/persist"
-import { perfFlags } from "@/utils/perf-flags"
 
 type ProjectMeta = {
   name?: string
@@ -364,7 +363,7 @@ function createGlobalSync() {
   function ensureChild(directory: string) {
     if (!directory) console.error("No directory provided")
     if (!children[directory]) {
-      if (perfFlags.childStoreEviction && Object.keys(children).length >= MAX_CHILD_STORES) {
+      if (Object.keys(children).length >= MAX_CHILD_STORES) {
         evict()
       }
       const vcs = runWithOwner(owner, () =>
@@ -444,7 +443,7 @@ function createGlobalSync() {
     }
     const childStore = children[directory]
     if (!childStore) throw new Error("Failed to create store")
-    if (perfFlags.childStoreEviction) touch(directory)
+    touch(directory)
     return childStore
   }
 
