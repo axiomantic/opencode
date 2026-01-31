@@ -71,6 +71,7 @@ import {
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
 import { createScrollSpy } from "./session/scroll-spy"
+import { VirtualizedMessageList, type VirtualizedMessageListHandle } from "@/components/virtualized-message-list"
 
 type DiffStyle = "unified" | "split"
 
@@ -535,6 +536,7 @@ export default function Page() {
   let inputRef!: HTMLDivElement
   let promptDock: HTMLDivElement | undefined
   let scroller: HTMLDivElement | undefined
+  let virtualizedListRef: VirtualizedMessageListHandle | undefined
 
   const scrollGestureWindowMs = 250
 
@@ -1534,6 +1536,16 @@ export default function Page() {
       scheduleTurnBackfill()
 
       requestAnimationFrame(() => {
+        if (virtualizedListRef) {
+          const rendered = renderedUserMessages()
+          const idx = rendered.findIndex((m) => m.id === message.id)
+          if (idx !== -1) {
+            virtualizedListRef.scrollToIndex(idx, { align: "start" })
+            updateHash(message.id)
+            return
+          }
+        }
+
         const el = document.getElementById(anchor(message.id))
         if (!el) {
           requestAnimationFrame(() => {
@@ -1548,6 +1560,16 @@ export default function Page() {
 
       updateHash(message.id)
       return
+    }
+
+    if (virtualizedListRef) {
+      const rendered = renderedUserMessages()
+      const idx = rendered.findIndex((m) => m.id === message.id)
+      if (idx !== -1) {
+        virtualizedListRef.scrollToIndex(idx, { align: "start" })
+        updateHash(message.id)
+        return
+      }
     }
 
     const el = document.getElementById(anchor(message.id))
@@ -2053,39 +2075,36 @@ export default function Page() {
                               </Button>
                             </div>
                           </Show>
-                          <For each={renderedUserMessages()}>
-                            {(message) => {
-                              if (import.meta.env.DEV) {
-                                onMount(() => {
-                                  const id = params.id
-                                  if (!id) return
-                                  navMark({ dir: params.dir, to: id, name: "session:first-turn-mounted" })
-                                })
-                              }
-
-                              return (
-                                <div
-                                  id={anchor(message.id)}
-                                  data-message-id={message.id}
-                                  classList={{
-                                    "min-w-0 w-full max-w-full": true,
-                                    "md:max-w-200": centered(),
+                          <VirtualizedMessageList
+                            ref={(r) => (virtualizedListRef = r)}
+                            messages={renderedUserMessages()}
+                            overscan={4}
+                            renderMessage={(message) => (
+                              <div
+                                id={anchor(message.id)}
+                                data-message-id={message.id}
+                                classList={{
+                                  "min-w-0 w-full max-w-full": true,
+                                  "md:max-w-200": centered(),
+                                }}
+                              >
+                                <SessionTurn
+                                  sessionID={params.id!}
+                                  messageID={message.id}
+                                  lastUserMessageID={lastUserMessage()?.id}
+                                  stepsExpanded={store.expanded[message.id] ?? false}
+                                  onStepsExpandedToggle={() =>
+                                    setStore("expanded", message.id, (open: boolean | undefined) => !open)
+                                  }
+                                  classes={{
+                                    root: "min-w-0 w-full relative",
+                                    content: "flex flex-col justify-between !overflow-visible",
+                                    container: "w-full px-4 md:px-6",
                                   }}
-                                >
-                                  <SessionTurn
-                                    sessionID={params.id!}
-                                    messageID={message.id}
-                                    lastUserMessageID={lastUserMessage()?.id}
-                                    stepsExpanded={store.expanded[message.id] ?? false}
-                                    onStepsExpandedToggle={() =>
-                                      setStore("expanded", message.id, (open: boolean | undefined) => !open)
-                                    }
-                                    classes={SESSION_TURN_CLASSES}
-                                  />
-                                </div>
-                              )
-                            }}
-                          </For>
+                                />
+                              </div>
+                            )}
+                          />
                         </div>
                       </div>
                     </div>
