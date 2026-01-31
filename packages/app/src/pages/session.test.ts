@@ -6,4 +6,11 @@ describe("Session page virtualization", () => {
     expect(code).toContain("VirtualizedMessageList")
     expect(code).toContain("messageVirtualization")
   })
+
+  test("uses scrollToIndex for virtualized navigation", async () => {
+    const code = await Bun.file("src/pages/session.tsx").text()
+    expect(code).toContain("virtualizedListRef")
+    expect(code).toContain("scrollToIndex")
+    expect(code).toContain("VirtualizedMessageListHandle")
+  })
 })

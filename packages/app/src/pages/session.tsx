@@ -70,7 +70,7 @@ import {
 } from "@/components/session"
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
-import { VirtualizedMessageList } from "@/components/virtualized-message-list"
+import { VirtualizedMessageList, type VirtualizedMessageListHandle } from "@/components/virtualized-message-list"
 import { perfFlags } from "@/utils/perf-flags"
 
 type DiffStyle = "unified" | "split"
@@ -530,6 +530,7 @@ export default function Page() {
   let inputRef!: HTMLDivElement
   let promptDock: HTMLDivElement | undefined
   let scroller: HTMLDivElement | undefined
+  let virtualizedListRef: VirtualizedMessageListHandle | undefined
 
   const scrollGestureWindowMs = 250
 
@@ -1493,6 +1494,17 @@ export default function Page() {
       scheduleTurnBackfill()
 
       requestAnimationFrame(() => {
+        // Use virtualized scroll when enabled
+        if (perfFlags.messageVirtualization && virtualizedListRef) {
+          const rendered = renderedUserMessages()
+          const idx = rendered.findIndex((m) => m.id === message.id)
+          if (idx !== -1) {
+            virtualizedListRef.scrollToIndex(idx, { align: "start" })
+            updateHash(message.id)
+            return
+          }
+        }
+
         const el = document.getElementById(anchor(message.id))
         if (!el) {
           requestAnimationFrame(() => {
@@ -1507,6 +1519,17 @@ export default function Page() {
 
       updateHash(message.id)
       return
+    }
+
+    // Use virtualized scroll when enabled
+    if (perfFlags.messageVirtualization && virtualizedListRef) {
+      const rendered = renderedUserMessages()
+      const idx = rendered.findIndex((m) => m.id === message.id)
+      if (idx !== -1) {
+        virtualizedListRef.scrollToIndex(idx, { align: "start" })
+        updateHash(message.id)
+        return
+      }
     }
 
     const el = document.getElementById(anchor(message.id))
@@ -2050,6 +2073,7 @@ export default function Page() {
                             }
                           >
                             <VirtualizedMessageList
+                              ref={(r) => (virtualizedListRef = r)}
                               messages={renderedUserMessages()}
                               overscan={4}
                               renderMessage={(message) => (
