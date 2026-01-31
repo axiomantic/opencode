@@ -70,6 +70,8 @@ import {
 } from "@/components/session"
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
+import { VirtualizedMessageList } from "@/components/virtualized-message-list"
+import { perfFlags } from "@/utils/perf-flags"
 
 type DiffStyle = "unified" | "split"
 
@@ -2005,17 +2007,52 @@ export default function Page() {
                               </Button>
                             </div>
                           </Show>
-                          <For each={renderedUserMessages()}>
-                            {(message) => {
-                              if (import.meta.env.DEV) {
-                                onMount(() => {
-                                  const id = params.id
-                                  if (!id) return
-                                  navMark({ dir: params.dir, to: id, name: "session:first-turn-mounted" })
-                                })
-                              }
+                          <Show
+                            when={perfFlags.messageVirtualization}
+                            fallback={
+                              <For each={renderedUserMessages()}>
+                                {(message) => {
+                                  if (import.meta.env.DEV) {
+                                    onMount(() => {
+                                      const id = params.id
+                                      if (!id) return
+                                      navMark({ dir: params.dir, to: id, name: "session:first-turn-mounted" })
+                                    })
+                                  }
 
-                              return (
+                                  return (
+                                    <div
+                                      id={anchor(message.id)}
+                                      data-message-id={message.id}
+                                      classList={{
+                                        "min-w-0 w-full max-w-full": true,
+                                        "md:max-w-200": centered(),
+                                      }}
+                                    >
+                                      <SessionTurn
+                                        sessionID={params.id!}
+                                        messageID={message.id}
+                                        lastUserMessageID={lastUserMessage()?.id}
+                                        stepsExpanded={store.expanded[message.id] ?? false}
+                                        onStepsExpandedToggle={() =>
+                                          setStore("expanded", message.id, (open: boolean | undefined) => !open)
+                                        }
+                                        classes={{
+                                          root: "min-w-0 w-full relative",
+                                          content: "flex flex-col justify-between !overflow-visible",
+                                          container: "w-full px-4 md:px-6",
+                                        }}
+                                      />
+                                    </div>
+                                  )
+                                }}
+                              </For>
+                            }
+                          >
+                            <VirtualizedMessageList
+                              messages={renderedUserMessages()}
+                              overscan={4}
+                              renderMessage={(message) => (
                                 <div
                                   id={anchor(message.id)}
                                   data-message-id={message.id}
@@ -2039,9 +2076,9 @@ export default function Page() {
                                     }}
                                   />
                                 </div>
-                              )
-                            }}
-                          </For>
+                              )}
+                            />
+                          </Show>
                         </div>
                       </div>
                     </div>
