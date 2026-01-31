@@ -60,6 +60,7 @@ import { retry } from "@opencode-ai/util/retry"
 import { playSound, soundSrc } from "@/utils/sound"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { agentColor } from "@/utils/agent"
+import { VirtualizedSessionList } from "@/components/virtualized-session-list"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme"
@@ -2210,11 +2211,12 @@ export default function Layout(props: ParentProps) {
               <Show when={loading()}>
                 <SessionSkeleton />
               </Show>
-              <For each={sessions()}>
-                {(session) => (
+              <VirtualizedSessionList
+                sessions={sessions()}
+                renderSession={(session) => (
                   <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />
                 )}
-              </For>
+              />
               <Show when={hasMore()}>
                 <div class="relative w-full py-1">
                   <Button
@@ -2455,9 +2457,12 @@ export default function Layout(props: ParentProps) {
           <Show when={loading()}>
             <SessionSkeleton />
           </Show>
-          <For each={sessions()}>
-            {(session) => <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />}
-          </For>
+          <VirtualizedSessionList
+            sessions={sessions()}
+            renderSession={(session) => (
+              <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />
+            )}
+          />
           <Show when={hasMore()}>
             <div class="relative w-full py-1">
               <Button
