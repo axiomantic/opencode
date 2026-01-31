@@ -2203,11 +2203,23 @@ export default function Layout(props: ParentProps) {
               <Show when={loading()}>
                 <SessionSkeleton />
               </Show>
-              <For each={sessions()}>
-                {(session) => (
-                  <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />
-                )}
-              </For>
+              <Show
+                when={perfFlags.sessionListVirtualization}
+                fallback={
+                  <For each={sessions()}>
+                    {(session) => (
+                      <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />
+                    )}
+                  </For>
+                }
+              >
+                <VirtualizedSessionList
+                  sessions={sessions()}
+                  renderSession={(session) => (
+                    <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />
+                  )}
+                />
+              </Show>
               <Show when={hasMore()}>
                 <div class="relative w-full py-1">
                   <Button
