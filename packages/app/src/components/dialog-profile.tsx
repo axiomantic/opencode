@@ -14,6 +14,7 @@ import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { detectCycle, getSiblings, getEffectiveValue, maskApiKey } from "@/lib/provider-utils"
+import { DialogConnectProvider } from "./dialog-connect-provider"
 
 const PROFILE_ID = /^[a-z0-9][a-z0-9-_]*$/
 
@@ -59,6 +60,14 @@ export function DialogProfile(props: Props) {
     const id = props.mode === "edit" ? props.profileId! : form.profileId
     return getSiblings(id, props.providerType, providers())
   })
+
+  // Check if provider supports OAuth
+  const oauthMethods = createMemo(() => {
+    const methods = globalSync.data.provider_auth[props.providerType] ?? []
+    return methods.filter((m) => m.type === "oauth")
+  })
+
+  const hasOauth = createMemo(() => oauthMethods().length > 0)
 
   // Get inherited values for placeholder display
   const inheritedApiKey = createMemo(() => {
@@ -135,9 +144,13 @@ export function DialogProfile(props: Props) {
       return
     }
 
+    // For profiles, always set extends to inherit models from the base provider
+    // If user selected a specific profile to extend, use that; otherwise extend the base provider
+    const effectiveExtends = extendsValue || props.providerType
+
     const config = {
       ...(name ? { name } : {}),
-      ...(extendsValue ? { extends: extendsValue } : {}),
+      extends: effectiveExtends,
       options: {
         ...(baseURL ? { baseURL } : {}),
       },
@@ -171,12 +184,19 @@ export function DialogProfile(props: Props) {
       })
   }
 
-  const title = props.mode === "create" ? `Add ${props.providerName} Profile` : `Edit ${existing()?.name || props.profileId}`
+  const title =
+    props.mode === "create" ? `Add ${props.providerName} Profile` : `Edit ${existing()?.name || props.profileId}`
 
   return (
     <Dialog
       title={
-        <IconButton tabIndex={-1} icon="arrow-left" variant="ghost" onClick={goBack} aria-label={language.t("common.goBack")} />
+        <IconButton
+          tabIndex={-1}
+          icon="arrow-left"
+          variant="ghost"
+          onClick={goBack}
+          aria-label={language.t("common.goBack")}
+        />
       }
       transition
     >
@@ -232,19 +252,74 @@ export function DialogProfile(props: Props) {
             </div>
           </Show>
 
-          <TextField
-            label="API Key"
-            placeholder={inheritedApiKey() ?? "Enter API key"}
-            description={
-              inheritedApiKey()
-                ? `Inherited from ${form.extends}`
-                : form.extends
-                  ? "No inherited value - enter API key"
-                  : undefined
+          <Show
+            when={hasOauth()}
+            fallback={
+              <TextField
+                label="API Key"
+                placeholder={inheritedApiKey() ?? "Enter API key"}
+                description={
+                  inheritedApiKey()
+                    ? `Inherited from ${form.extends}`
+                    : form.extends
+                      ? "No inherited value - enter API key"
+                      : undefined
+                }
+                value={form.apiKey}
+                onChange={setForm.bind(null, "apiKey")}
+              />
             }
-            value={form.apiKey}
-            onChange={setForm.bind(null, "apiKey")}
-          />
+          >
+            <div class="flex flex-col gap-3">
+              <div class="flex flex-col gap-2">
+                <label class="text-12-medium text-text-weak">Authentication</label>
+                <div class="flex gap-3">
+                  <Button
+                    type="button"
+                    size="large"
+                    variant="secondary"
+                    class="flex-1"
+                    disabled={props.mode === "create" && !form.profileId.trim()}
+                    onClick={() => {
+                      const profileId = props.mode === "edit" ? props.profileId! : form.profileId.trim()
+                      const name = form.name.trim() || profileId
+                      dialog.show(() => (
+                        <DialogConnectProvider
+                          provider={props.providerType}
+                          profileId={profileId}
+                          profileName={name}
+                          onComplete={goBack}
+                        />
+                      ))
+                    }}
+                  >
+                    Login with {props.providerName}
+                  </Button>
+                </div>
+                <span class="text-12-regular text-text-weak">
+                  Sign in with your {props.providerName} account to authenticate this profile
+                </span>
+              </div>
+              <div class="flex items-center gap-3">
+                <div class="flex-1 h-px bg-border-weak-base" />
+                <span class="text-12-regular text-text-weak">or</span>
+                <div class="flex-1 h-px bg-border-weak-base" />
+              </div>
+              <TextField
+                label="API Key"
+                placeholder={inheritedApiKey() ?? "Enter API key"}
+                description={
+                  inheritedApiKey()
+                    ? `Inherited from ${form.extends}`
+                    : form.extends
+                      ? "No inherited value - enter API key"
+                      : "Use an API key instead of OAuth login"
+                }
+                value={form.apiKey}
+                onChange={setForm.bind(null, "apiKey")}
+              />
+            </div>
+          </Show>
 
           <TextField
             label="Base URL (optional)"

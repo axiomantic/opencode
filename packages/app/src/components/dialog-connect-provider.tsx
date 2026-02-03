@@ -21,12 +21,23 @@ import { usePlatform } from "@/context/platform"
 import { DialogSelectModel } from "./dialog-select-model"
 import { DialogSelectProvider } from "./dialog-select-provider"
 
-export function DialogConnectProvider(props: { provider: string }) {
+type Props = {
+  provider: string
+  profileId?: string
+  profileName?: string
+  onComplete?: () => void
+}
+
+export function DialogConnectProvider(props: Props) {
   const dialog = useDialog()
   const globalSync = useGlobalSync()
   const globalSDK = useGlobalSDK()
   const platform = usePlatform()
   const language = useLanguage()
+
+  // For profiles, use profileId for auth storage but provider for method lookup
+  const authId = () => props.profileId ?? props.provider
+  const baseProvider = () => (props.profileId ? props.provider : undefined)
 
   const alive = { value: true }
   const timer = { current: undefined as ReturnType<typeof setTimeout> | undefined }
@@ -85,8 +96,9 @@ export function DialogConnectProvider(props: { provider: string }) {
       await globalSDK.client.provider.oauth
         .authorize(
           {
-            providerID: props.provider,
+            providerID: authId(),
             method: index,
+            baseProvider: baseProvider(),
           },
           { throwOnError: true },
         )
@@ -135,18 +147,26 @@ export function DialogConnectProvider(props: { provider: string }) {
     })
   })
 
+  const displayName = () => props.profileName ?? provider().name
+
   async function complete() {
     await globalSDK.client.global.dispose()
     dialog.close()
+    props.onComplete?.()
     showToast({
       variant: "success",
       icon: "circle-check",
-      title: language.t("provider.connect.toast.connected.title", { provider: provider().name }),
-      description: language.t("provider.connect.toast.connected.description", { provider: provider().name }),
+      title: language.t("provider.connect.toast.connected.title", { provider: displayName() }),
+      description: language.t("provider.connect.toast.connected.description", { provider: displayName() }),
     })
   }
 
   function goBack() {
+    // If this is a profile OAuth flow, just close the dialog
+    if (props.profileId) {
+      dialog.close()
+      return
+    }
     if (methods().length === 1) {
       dialog.show(() => <DialogSelectProvider />)
       return
@@ -180,6 +200,7 @@ export function DialogConnectProvider(props: { provider: string }) {
           <ProviderIcon id={props.provider as IconName} class="size-5 shrink-0 icon-strong-base" />
           <div class="text-16-medium text-text-strong">
             <Switch>
+              <Match when={props.profileId}>{`Connect ${displayName()}`}</Match>
               <Match when={props.provider === "anthropic" && method()?.label?.toLowerCase().includes("max")}>
                 {language.t("provider.connect.title.anthropicProMax")}
               </Match>
@@ -191,7 +212,7 @@ export function DialogConnectProvider(props: { provider: string }) {
           <Switch>
             <Match when={store.methodIndex === undefined}>
               <div class="text-14-regular text-text-base">
-                {language.t("provider.connect.selectMethod", { provider: provider().name })}
+                {language.t("provider.connect.selectMethod", { provider: displayName() })}
               </div>
               <div class="">
                 <List
@@ -253,7 +274,7 @@ export function DialogConnectProvider(props: { provider: string }) {
 
                   setFormStore("error", undefined)
                   await globalSDK.client.auth.set({
-                    providerID: props.provider,
+                    providerID: authId(),
                     auth: {
                       type: "api",
                       key: apiKey,
@@ -338,7 +359,7 @@ export function DialogConnectProvider(props: { provider: string }) {
                       setFormStore("error", undefined)
                       const result = await globalSDK.client.provider.oauth
                         .callback({
-                          providerID: props.provider,
+                          providerID: authId(),
                           method: store.methodIndex,
                           code,
                         })
@@ -401,7 +422,7 @@ export function DialogConnectProvider(props: { provider: string }) {
 
                         const result = await globalSDK.client.provider.oauth
                           .callback({
-                            providerID: props.provider,
+                            providerID: authId(),
                             method: store.methodIndex,
                           })
                           .then((value) =>

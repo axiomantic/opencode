@@ -4034,6 +4034,10 @@ export type ProviderOauthAuthorizeData = {
      * Auth method index
      */
     method: number
+    /**
+     * Base provider ID for profile OAuth
+     */
+    baseProvider?: string
   }
   path: {
     /**
