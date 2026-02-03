@@ -712,14 +712,14 @@ export namespace Provider {
       }
     }
 
-    // Process inherit directives from config - clone base providers with new IDs
+    // Process extends directives from config - clone base providers with new IDs
     for (const [providerID, providerConfig] of configProviders) {
-      if (!providerConfig.inherit) continue
+      if (!providerConfig.extends) continue
       if (!isProviderAllowed(providerID)) continue
 
-      const base = database[providerConfig.inherit]
+      const base = database[providerConfig.extends]
       if (!base) {
-        log.warn(`inherit: base provider '${providerConfig.inherit}' not found for '${providerID}'`)
+        log.warn(`extends: base provider '${providerConfig.extends}' not found for '${providerID}'`)
         continue
       }
 
@@ -862,12 +862,12 @@ export namespace Provider {
 
       // For github-copilot plugin, check if auth exists for either github-copilot or github-copilot-enterprise
       let hasAuth = false
-      const auth = await Auth.get(providerID)
+      const auth = await Auth.resolve(providerID, config)
       if (auth) hasAuth = true
 
       // Special handling for github-copilot: also check for enterprise auth
       if (providerID === "github-copilot" && !hasAuth) {
-        const enterpriseAuth = await Auth.get("github-copilot-enterprise")
+        const enterpriseAuth = await Auth.resolve("github-copilot-enterprise", config)
         if (enterpriseAuth) hasAuth = true
       }
 
@@ -876,7 +876,7 @@ export namespace Provider {
 
       // Load for the main provider if auth exists
       if (auth) {
-        const options = await plugin.auth.loader(() => Auth.get(providerID) as any, database[plugin.auth.provider])
+        const options = await plugin.auth.loader(() => Auth.resolve(providerID, config) as any, database[plugin.auth.provider])
         const opts = options ?? {}
         const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
         mergeProvider(providerID, patch)
@@ -886,10 +886,10 @@ export namespace Provider {
       if (providerID === "github-copilot") {
         const enterpriseProviderID = "github-copilot-enterprise"
         if (!disabled.has(enterpriseProviderID)) {
-          const enterpriseAuth = await Auth.get(enterpriseProviderID)
+          const enterpriseAuth = await Auth.resolve(enterpriseProviderID, config)
           if (enterpriseAuth) {
             const enterpriseOptions = await plugin.auth.loader(
-              () => Auth.get(enterpriseProviderID) as any,
+              () => Auth.resolve(enterpriseProviderID, config) as any,
               database[enterpriseProviderID],
             )
             const opts = enterpriseOptions ?? {}

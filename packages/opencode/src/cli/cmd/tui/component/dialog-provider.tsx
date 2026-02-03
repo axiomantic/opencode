@@ -10,9 +10,11 @@ import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
 import type { ProviderAuthAuthorization } from "@opencode-ai/sdk/v2"
 import { DialogModel } from "./dialog-model"
+import { DialogProfile } from "./dialog-profile"
 import { useKeyboard } from "@opentui/solid"
 import { Clipboard } from "@tui/util/clipboard"
 import { useToast } from "../ui/toast"
+import { getBaseType } from "../util/provider"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -27,82 +29,146 @@ export function createDialogProviderOptions() {
   const dialog = useDialog()
   const sdk = useSDK()
   const connected = createMemo(() => new Set(sync.data.provider_next.connected))
+  const configProviders = createMemo(() => sync.data.config.provider ?? {})
+
   const options = createMemo(() => {
-    return pipe(
-      sync.data.provider_next.all,
-      sortBy((x) => PROVIDER_PRIORITY[x.id] ?? 99),
-      map((provider) => {
-        const isConnected = connected().has(provider.id)
-        return {
-          title: provider.name,
-          value: provider.id,
-          description: {
-            opencode: "(Recommended)",
-            anthropic: "(Claude Max or API key)",
-            openai: "(ChatGPT Plus/Pro or API key)",
-          }[provider.id],
-          category: provider.id in PROVIDER_PRIORITY ? "Popular" : "Other",
-          footer: isConnected ? "Connected" : undefined,
-          async onSelect() {
-            const methods = sync.data.provider_auth[provider.id] ?? [
-              {
-                type: "api",
-                label: "API key",
-              },
-            ]
-            let index: number | null = 0
-            if (methods.length > 1) {
-              index = await new Promise<number | null>((resolve) => {
-                dialog.replace(
-                  () => (
-                    <DialogSelect
-                      title="Select auth method"
-                      options={methods.map((x, index) => ({
-                        title: x.label,
-                        value: index,
-                      }))}
-                      onSelect={(option) => resolve(option.value)}
-                    />
-                  ),
-                  () => resolve(null),
-                )
-              })
-            }
-            if (index == null) return
-            const method = methods[index]
-            if (method.type === "oauth") {
-              const result = await sdk.client.provider.oauth.authorize({
-                providerID: provider.id,
-                method: index,
-              })
-              if (result.data?.method === "code") {
-                dialog.replace(() => (
-                  <CodeMethod
-                    providerID={provider.id}
-                    title={method.label}
-                    index={index}
-                    authorization={result.data!}
-                  />
-                ))
-              }
-              if (result.data?.method === "auto") {
-                dialog.replace(() => (
-                  <AutoMethod
-                    providerID={provider.id}
-                    title={method.label}
-                    index={index}
-                    authorization={result.data!}
-                  />
-                ))
-              }
-            }
-            if (method.type === "api") {
-              return dialog.replace(() => <ApiMethod providerID={provider.id} title={method.label} />)
-            }
-          },
+    type OptionType = {
+      title: string
+      value: string
+      description?: string
+      category?: string
+      footer?: string
+      onSelect: () => void | Promise<void>
+    }
+
+    const result: OptionType[] = []
+
+    // Group providers by base type
+    const grouped = new Map<string, { base: (typeof sync.data.provider_next.all)[number]; profiles: string[] }>()
+
+    for (const provider of sync.data.provider_next.all) {
+      const config = configProviders()[provider.id]
+      const baseType = config?.extends ? getBaseType(provider.id, configProviders()) : provider.id
+
+      const existing = grouped.get(baseType)
+      if (existing) {
+        // This is a profile of an existing base
+        if (config?.extends) {
+          existing.profiles.push(provider.id)
         }
-      }),
+      } else {
+        // This is a new base provider
+        grouped.set(baseType, {
+          base: provider,
+          profiles: [],
+        })
+      }
+    }
+
+    // Sort groups by priority
+    const sortedGroups = Array.from(grouped.entries()).sort(
+      ([a], [b]) => (PROVIDER_PRIORITY[a] ?? 99) - (PROVIDER_PRIORITY[b] ?? 99),
     )
+
+    for (const [baseType, group] of sortedGroups) {
+      const provider = group.base
+      const isConnected = connected().has(provider.id)
+      const category = baseType in PROVIDER_PRIORITY ? "Popular" : "Other"
+
+      // Add base provider
+      result.push({
+        title: provider.name,
+        value: provider.id,
+        description: {
+          opencode: "(Recommended)",
+          anthropic: "(Claude Max or API key)",
+          openai: "(ChatGPT Plus/Pro or API key)",
+        }[provider.id],
+        category,
+        footer: isConnected ? "Connected" : undefined,
+        onSelect: () => handleProviderSelect(provider.id, provider.name),
+      })
+
+      // Add profiles under the base provider
+      for (const profileId of group.profiles) {
+        const profileConfig = configProviders()[profileId]
+        const profileName = profileConfig?.name ?? profileId
+        const isProfileConnected = connected().has(profileId)
+
+        result.push({
+          title: `  ${profileName}`,
+          value: profileId,
+          description: `extends ${profileConfig?.extends}`,
+          category,
+          footer: isProfileConnected ? "Connected" : undefined,
+          onSelect: () => handleProviderSelect(profileId, profileName),
+        })
+      }
+
+      // Add "Add profile" option for connected providers
+      if (isConnected) {
+        result.push({
+          title: "  + Add profile",
+          value: `__add_profile__${provider.id}`,
+          category,
+          onSelect: () => {
+            dialog.replace(() => (
+              <DialogProfile mode="create" providerType={provider.id} providerName={provider.name} />
+            ))
+          },
+        })
+      }
+    }
+
+    return result
+
+    async function handleProviderSelect(providerId: string, providerName: string) {
+      const methods = sync.data.provider_auth[providerId] ?? [
+        {
+          type: "api",
+          label: "API key",
+        },
+      ]
+      let index: number | null = 0
+      if (methods.length > 1) {
+        index = await new Promise<number | null>((resolve) => {
+          dialog.replace(
+            () => (
+              <DialogSelect
+                title="Select auth method"
+                options={methods.map((x, i) => ({
+                  title: x.label,
+                  value: i,
+                }))}
+                onSelect={(option) => resolve(option.value)}
+              />
+            ),
+            () => resolve(null),
+          )
+        })
+      }
+      if (index == null) return
+      const method = methods[index]
+      if (method.type === "oauth") {
+        const result = await sdk.client.provider.oauth.authorize({
+          providerID: providerId,
+          method: index,
+        })
+        if (result.data?.method === "code") {
+          dialog.replace(() => (
+            <CodeMethod providerID={providerId} title={method.label} index={index} authorization={result.data!} />
+          ))
+        }
+        if (result.data?.method === "auto") {
+          dialog.replace(() => (
+            <AutoMethod providerID={providerId} title={method.label} index={index} authorization={result.data!} />
+          ))
+        }
+      }
+      if (method.type === "api") {
+        return dialog.replace(() => <ApiMethod providerID={providerId} title={method.label} />)
+      }
+    }
   })
   return options
 }
