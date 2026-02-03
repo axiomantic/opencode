@@ -2041,6 +2041,7 @@ export class Oauth extends HeyApiClient {
       providerID: string
       directory?: string
       method?: number
+      baseProvider?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2052,6 +2053,7 @@ export class Oauth extends HeyApiClient {
             { in: "path", key: "providerID" },
             { in: "query", key: "directory" },
             { in: "body", key: "method" },
+            { in: "body", key: "baseProvider" },
           ],
         },
       ],
