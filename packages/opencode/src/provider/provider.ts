@@ -725,6 +725,27 @@ export namespace Provider {
       }
     }
 
+    // Process provider profiles with type field
+    // This clones the base provider's models for profiles before config processing
+    for (const [id, provider] of configProviders) {
+      if (!provider.type) continue
+      if (!isProviderAllowed(id)) continue
+      const base = database[provider.type]
+      if (!base) {
+        log.warn("provider type not found", { id, type: provider.type })
+        continue
+      }
+      database[id] = {
+        ...base,
+        id,
+        name: provider.name ?? id,
+        models: mapValues(base.models, (model) => ({
+          ...model,
+          providerID: id,
+        })),
+      }
+    }
+
     function mergeProvider(providerID: string, provider: Partial<Info>) {
       const existing = providers[providerID]
       if (existing) {

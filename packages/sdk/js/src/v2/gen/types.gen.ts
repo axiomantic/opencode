@@ -1502,6 +1502,10 @@ export type ProviderConfig = {
       }
     }
   }
+  /**
+   * Provider type for profiles. Use this to create multiple configurations of the same provider (e.g., type: 'anthropic' for a work account).
+   */
+  type?: string
   whitelist?: Array<string>
   blacklist?: Array<string>
   options?: {

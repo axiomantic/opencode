@@ -903,6 +903,12 @@ export namespace Config {
 
   export const Provider = ModelsDev.Provider.partial()
     .extend({
+      type: z
+        .string()
+        .optional()
+        .describe(
+          "Provider type for profiles. Use this to create multiple configurations of the same provider (e.g., type: 'anthropic' for a work account).",
+        ),
       whitelist: z.array(z.string()).optional(),
       blacklist: z.array(z.string()).optional(),
       models: z

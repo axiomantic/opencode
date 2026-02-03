@@ -2148,3 +2148,353 @@ test("custom model with variants enabled and disabled", async () => {
     },
   })
 })
+
+// =============================================================================
+// Provider Profiles (type field)
+// =============================================================================
+
+test("profile with type clones base provider models", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            "my-anthropic": {
+              type: "anthropic",
+              options: {
+                apiKey: "test-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      const profile = providers["my-anthropic"]
+      expect(profile).toBeDefined()
+      expect(Object.keys(profile.models).length).toBeGreaterThan(0)
+      // All models should have providerID set to profile ID
+      for (const model of Object.values(profile.models)) {
+        expect(model.providerID).toBe("my-anthropic")
+      }
+    },
+  })
+})
+
+test("profile with type uses config name", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            "my-anthropic": {
+              type: "anthropic",
+              name: "Work Anthropic",
+              options: {
+                apiKey: "test-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      const profile = providers["my-anthropic"]
+      expect(profile).toBeDefined()
+      expect(profile.name).toBe("Work Anthropic")
+    },
+  })
+})
+
+test("profile with type defaults name to id", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            "my-anthropic": {
+              type: "anthropic",
+              options: {
+                apiKey: "test-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      const profile = providers["my-anthropic"]
+      expect(profile).toBeDefined()
+      expect(profile.name).toBe("my-anthropic")
+    },
+  })
+})
+
+test("profile with missing type is skipped", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            "my-nonexistent": {
+              type: "nonexistent-provider",
+              options: {
+                apiKey: "test-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      expect(providers["my-nonexistent"]).toBeUndefined()
+    },
+  })
+})
+
+test("profile does not affect base provider", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            anthropic: {
+              options: {
+                apiKey: "base-key",
+              },
+            },
+            "my-anthropic": {
+              type: "anthropic",
+              name: "My Profile",
+              options: {
+                apiKey: "profile-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      const base = providers["anthropic"]
+      const profile = providers["my-anthropic"]
+      expect(base).toBeDefined()
+      expect(profile).toBeDefined()
+      // Base provider should keep its own name
+      expect(base.name).toBe("Anthropic")
+      // Profile should have its own name
+      expect(profile.name).toBe("My Profile")
+      // Both should have models
+      expect(Object.keys(base.models).length).toBeGreaterThan(0)
+      expect(Object.keys(profile.models).length).toBeGreaterThan(0)
+      // Base models should have base providerID
+      for (const model of Object.values(base.models)) {
+        expect(model.providerID).toBe("anthropic")
+      }
+      // Profile models should have profile providerID
+      for (const model of Object.values(profile.models)) {
+        expect(model.providerID).toBe("my-anthropic")
+      }
+    },
+  })
+})
+
+test("multiple profiles of same type are independent", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            "work-anthropic": {
+              type: "anthropic",
+              name: "Work Account",
+              options: {
+                apiKey: "work-key",
+              },
+            },
+            "personal-anthropic": {
+              type: "anthropic",
+              name: "Personal Account",
+              options: {
+                apiKey: "personal-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      const work = providers["work-anthropic"]
+      const personal = providers["personal-anthropic"]
+      expect(work).toBeDefined()
+      expect(personal).toBeDefined()
+      expect(work.name).toBe("Work Account")
+      expect(personal.name).toBe("Personal Account")
+      // Each should have their own providerID on models
+      for (const model of Object.values(work.models)) {
+        expect(model.providerID).toBe("work-anthropic")
+      }
+      for (const model of Object.values(personal.models)) {
+        expect(model.providerID).toBe("personal-anthropic")
+      }
+    },
+  })
+})
+
+test("profile blocked when not in enabled_providers list", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          enabled_providers: ["anthropic"],
+          provider: {
+            anthropic: {
+              options: { apiKey: "base-key" },
+            },
+            "my-anthropic": {
+              type: "anthropic",
+              options: { apiKey: "profile-key" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      expect(providers["anthropic"]).toBeDefined()
+      // Profile not in enabled_providers, should be filtered
+      expect(providers["my-anthropic"]).toBeUndefined()
+    },
+  })
+})
+
+test("profile allowed when in enabled_providers list", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          enabled_providers: ["anthropic", "my-anthropic"],
+          provider: {
+            anthropic: {
+              options: { apiKey: "base-key" },
+            },
+            "my-anthropic": {
+              type: "anthropic",
+              options: { apiKey: "profile-key" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      expect(providers["anthropic"]).toBeDefined()
+      expect(providers["my-anthropic"]).toBeDefined()
+    },
+  })
+})
+
+test("profile in disabled_providers list is filtered", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          disabled_providers: ["my-anthropic"],
+          provider: {
+            anthropic: {
+              options: { apiKey: "base-key" },
+            },
+            "my-anthropic": {
+              type: "anthropic",
+              options: { apiKey: "profile-key" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await Provider.list()
+      expect(providers["anthropic"]).toBeDefined()
+      expect(providers["my-anthropic"]).toBeUndefined()
+    },
+  })
+})
+
+test("profile config has type field accessible via Config", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            "my-anthropic": {
+              type: "anthropic",
+              options: {
+                apiKey: "profile-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const { Config } = await import("../../src/config/config")
+      const config = await Config.get()
+      expect(config.provider?.["my-anthropic"]?.type).toBe("anthropic")
+    },
+  })
+})
