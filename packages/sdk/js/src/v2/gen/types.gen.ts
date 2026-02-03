@@ -1502,6 +1502,10 @@ export type ProviderConfig = {
       }
     }
   }
+  /**
+   * Base provider ID to extend. The base provider's models will be cloned under this provider's ID with custom credentials.
+   */
+  extends?: string
   whitelist?: Array<string>
   blacklist?: Array<string>
   options?: {
@@ -4040,6 +4044,10 @@ export type ProviderOauthAuthorizeData = {
      * Auth method index
      */
     method: number
+    /**
+     * Base provider ID for profile OAuth
+     */
+    baseProvider?: string
   }
   path: {
     /**

@@ -3952,6 +3952,10 @@
                   "method": {
                     "description": "Auth method index",
                     "type": "number"
+                  },
+                  "baseProvider": {
+                    "description": "Base provider ID for profile OAuth",
+                    "type": "string"
                   }
                 },
                 "required": ["method"]
@@ -9287,6 +9291,10 @@
                 }
               }
             }
+          },
+          "extends": {
+            "description": "Base provider ID to extend. The base provider's models will be cloned under this provider's ID with custom credentials.",
+            "type": "string"
           },
           "whitelist": {
             "type": "array",
