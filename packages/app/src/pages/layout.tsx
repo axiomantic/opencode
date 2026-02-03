@@ -36,7 +36,6 @@ import { DiffChanges } from "@opencode-ai/ui/diff-changes"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { getFilename } from "@opencode-ai/util/path"
-import { findLast } from "@opencode-ai/util/array"
 import { Session, type Message, type TextPart } from "@opencode-ai/sdk/v2/client"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
@@ -60,7 +59,6 @@ import { retry } from "@opencode-ai/util/retry"
 import { playSound, soundSrc } from "@/utils/sound"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { agentColor } from "@/utils/agent"
-import { VirtualizedSessionList } from "@/components/virtualized-session-list"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme"
@@ -695,27 +693,11 @@ export default function Layout(props: ParentProps) {
   const PREFETCH_MAX_SESSIONS_PER_DIR = 10
   const prefetchedByDir = new Map<string, Map<string, true>>()
 
-  const MAX_PREFETCH_DIRS = 20
-
-  const cleanupPrefetch = () => {
-    if (prefetchedByDir.size <= MAX_PREFETCH_DIRS) return
-
-    // Get directories sorted by least recently added
-    const dirs = Array.from(prefetchedByDir.keys())
-    const toRemove = dirs.slice(0, dirs.length - MAX_PREFETCH_DIRS)
-
-    for (const dir of toRemove) {
-      prefetchQueues.delete(dir)
-      prefetchedByDir.delete(dir)
-    }
-  }
-
   const lruFor = (directory: string) => {
     const existing = prefetchedByDir.get(directory)
     if (existing) return existing
     const created = new Map<string, true>()
     prefetchedByDir.set(directory, created)
-    cleanupPrefetch()
     return created
   }
 
@@ -1731,7 +1713,10 @@ export default function Layout(props: ParentProps) {
     const tint = createMemo(() => {
       const messages = sessionStore.message[props.session.id]
       if (!messages) return undefined
-      const user = findLast(messages, (m) => m.role === "user")
+      const user = messages
+        .slice()
+        .reverse()
+        .find((m) => m.role === "user")
       if (!user?.agent) return undefined
 
       const agent = sessionStore.agent.find((a) => a.name === user.agent)
@@ -2023,7 +2008,12 @@ export default function Layout(props: ParentProps) {
       pendingRename: false,
     })
     const slug = createMemo(() => base64Encode(props.directory))
-    const sessions = createMemo(() => globalSync.sortedSessions(props.directory))
+    const sessions = createMemo(() =>
+      workspaceStore.session
+        .filter((session) => session.directory === workspaceStore.path.directory)
+        .filter((session) => !session.parentID && !session.time?.archived)
+        .toSorted(sortSessions(Date.now())),
+    )
     const children = createMemo(() => {
       const map = new Map<string, string[]>()
       for (const session of workspaceStore.session) {
@@ -2211,12 +2201,11 @@ export default function Layout(props: ParentProps) {
               <Show when={loading()}>
                 <SessionSkeleton />
               </Show>
-              <VirtualizedSessionList
-                sessions={sessions()}
-                renderSession={(session) => (
+              <For each={sessions()}>
+                {(session) => (
                   <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />
                 )}
-              />
+              </For>
               <Show when={hasMore()}>
                 <div class="relative w-full py-1">
                   <Button
@@ -2428,7 +2417,12 @@ export default function Layout(props: ParentProps) {
   const LocalWorkspace = (props: { project: LocalProject; mobile?: boolean }): JSX.Element => {
     const [workspaceStore, setWorkspaceStore] = globalSync.child(props.project.worktree)
     const slug = createMemo(() => base64Encode(props.project.worktree))
-    const sessions = createMemo(() => globalSync.sortedSessions(props.project.worktree))
+    const sessions = createMemo(() =>
+      workspaceStore.session
+        .filter((session) => session.directory === workspaceStore.path.directory)
+        .filter((session) => !session.parentID && !session.time?.archived)
+        .toSorted(sortSessions(Date.now())),
+    )
     const children = createMemo(() => {
       const map = new Map<string, string[]>()
       for (const session of workspaceStore.session) {
@@ -2461,12 +2455,9 @@ export default function Layout(props: ParentProps) {
           <Show when={loading()}>
             <SessionSkeleton />
           </Show>
-          <VirtualizedSessionList
-            sessions={sessions()}
-            renderSession={(session) => (
-              <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />
-            )}
-          />
+          <For each={sessions()}>
+            {(session) => <SessionItem session={session} slug={slug()} mobile={props.mobile} children={children()} />}
+          </For>
           <Show when={hasMore()}>
             <div class="relative w-full py-1">
               <Button
