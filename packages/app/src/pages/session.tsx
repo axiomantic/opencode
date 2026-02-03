@@ -70,16 +70,8 @@ import {
 } from "@/components/session"
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
-import { createScrollSpy } from "./session/scroll-spy"
-import { VirtualizedMessageList, type VirtualizedMessageListHandle } from "@/components/virtualized-message-list"
 
 type DiffStyle = "unified" | "split"
-
-const SESSION_TURN_CLASSES = {
-  root: "min-w-0 w-full relative",
-  content: "flex flex-col justify-between !overflow-visible",
-  container: "w-full px-4 md:px-6",
-} as const
 
 const handoff = {
   prompt: "",
@@ -536,7 +528,6 @@ export default function Page() {
   let inputRef!: HTMLDivElement
   let promptDock: HTMLDivElement | undefined
   let scroller: HTMLDivElement | undefined
-  let virtualizedListRef: VirtualizedMessageListHandle | undefined
 
   const scrollGestureWindowMs = 250
 
@@ -558,40 +549,6 @@ export default function Page() {
   createEffect(() => {
     if (!params.id) return
     sync.session.sync(params.id)
-  })
-
-  // Session cleanup on navigation (behind flag)
-  const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-  createEffect(
-    on(
-      () => params.id,
-      (newId, oldId) => {
-        if (!oldId || oldId === newId) return
-
-        // Cancel any existing timer for this session
-        const existing = cleanupTimers.get(oldId)
-        if (existing) clearTimeout(existing)
-
-        // Schedule cleanup after 30s grace period
-        const timer = setTimeout(() => {
-          cleanupTimers.delete(oldId)
-          if (params.id !== oldId) {
-            sync.session.cleanupSessionCaches(oldId)
-            sync.session.cleanupMeta(oldId)
-          }
-        }, 30000)
-
-        cleanupTimers.set(oldId, timer)
-      },
-    ),
-  )
-
-  onCleanup(() => {
-    for (const timer of cleanupTimers.values()) {
-      clearTimeout(timer)
-    }
-    cleanupTimers.clear()
   })
 
   createEffect(() => {
@@ -1384,8 +1341,6 @@ export default function Page() {
   let scrollSpyFrame: number | undefined
   let scrollSpyTarget: HTMLDivElement | undefined
 
-  const scrollSpy = createScrollSpy({ useObserver: true })
-
   const anchor = (id: string) => `message-${id}`
 
   const setScrollRef = (el: HTMLDivElement | undefined) => {
@@ -1536,16 +1491,6 @@ export default function Page() {
       scheduleTurnBackfill()
 
       requestAnimationFrame(() => {
-        if (virtualizedListRef) {
-          const rendered = renderedUserMessages()
-          const idx = rendered.findIndex((m) => m.id === message.id)
-          if (idx !== -1) {
-            virtualizedListRef.scrollToIndex(idx, { align: "start" })
-            updateHash(message.id)
-            return
-          }
-        }
-
         const el = document.getElementById(anchor(message.id))
         if (!el) {
           requestAnimationFrame(() => {
@@ -1560,16 +1505,6 @@ export default function Page() {
 
       updateHash(message.id)
       return
-    }
-
-    if (virtualizedListRef) {
-      const rendered = renderedUserMessages()
-      const idx = rendered.findIndex((m) => m.id === message.id)
-      if (idx !== -1) {
-        virtualizedListRef.scrollToIndex(idx, { align: "start" })
-        updateHash(message.id)
-        return
-      }
     }
 
     const el = document.getElementById(anchor(message.id))
@@ -1636,11 +1571,6 @@ export default function Page() {
   }
 
   const getActiveMessageId = (container: HTMLDivElement) => {
-    // Use optimized scroll-spy if available
-    if (scrollSpy) {
-      return scrollSpy.activeId()
-    }
-
     const rect = container.getBoundingClientRect()
     if (!rect.width || !rect.height) return
 
@@ -2075,36 +2005,43 @@ export default function Page() {
                               </Button>
                             </div>
                           </Show>
-                          <VirtualizedMessageList
-                            ref={(r) => (virtualizedListRef = r)}
-                            messages={renderedUserMessages()}
-                            overscan={4}
-                            renderMessage={(message) => (
-                              <div
-                                id={anchor(message.id)}
-                                data-message-id={message.id}
-                                classList={{
-                                  "min-w-0 w-full max-w-full": true,
-                                  "md:max-w-200": centered(),
-                                }}
-                              >
-                                <SessionTurn
-                                  sessionID={params.id!}
-                                  messageID={message.id}
-                                  lastUserMessageID={lastUserMessage()?.id}
-                                  stepsExpanded={store.expanded[message.id] ?? false}
-                                  onStepsExpandedToggle={() =>
-                                    setStore("expanded", message.id, (open: boolean | undefined) => !open)
-                                  }
-                                  classes={{
-                                    root: "min-w-0 w-full relative",
-                                    content: "flex flex-col justify-between !overflow-visible",
-                                    container: "w-full px-4 md:px-6",
+                          <For each={renderedUserMessages()}>
+                            {(message) => {
+                              if (import.meta.env.DEV) {
+                                onMount(() => {
+                                  const id = params.id
+                                  if (!id) return
+                                  navMark({ dir: params.dir, to: id, name: "session:first-turn-mounted" })
+                                })
+                              }
+
+                              return (
+                                <div
+                                  id={anchor(message.id)}
+                                  data-message-id={message.id}
+                                  classList={{
+                                    "min-w-0 w-full max-w-full": true,
+                                    "md:max-w-200": centered(),
                                   }}
-                                />
-                              </div>
-                            )}
-                          />
+                                >
+                                  <SessionTurn
+                                    sessionID={params.id!}
+                                    messageID={message.id}
+                                    lastUserMessageID={lastUserMessage()?.id}
+                                    stepsExpanded={store.expanded[message.id] ?? false}
+                                    onStepsExpandedToggle={() =>
+                                      setStore("expanded", message.id, (open: boolean | undefined) => !open)
+                                    }
+                                    classes={{
+                                      root: "min-w-0 w-full relative",
+                                      content: "flex flex-col justify-between !overflow-visible",
+                                      container: "w-full px-4 md:px-6",
+                                    }}
+                                  />
+                                </div>
+                              )
+                            }}
+                          </For>
                         </div>
                       </div>
                     </div>
