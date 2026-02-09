@@ -248,8 +248,13 @@ export namespace SessionPrompt {
     return controller.signal
   }
 
-  export function cancel(sessionID: string) {
+  export async function cancel(sessionID: string) {
     log.info("cancel", { sessionID })
+
+    // First, recursively cancel all children
+    const children = await Session.children(sessionID)
+    await Promise.all(children.map((child) => cancel(child.id)))
+
     const s = state()
     const match = s[sessionID]
     if (!match) {
@@ -274,7 +279,7 @@ export namespace SessionPrompt {
       })
     }
 
-    using _ = defer(() => cancel(sessionID))
+    await using _ = defer(() => cancel(sessionID))
 
     let step = 0
     const session = await Session.get(sessionID)
@@ -1374,7 +1379,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     if (!abort) {
       throw new Session.BusyError(input.sessionID)
     }
-    using _ = defer(() => cancel(input.sessionID))
+    await using _ = defer(() => cancel(input.sessionID))
 
     const session = await Session.get(input.sessionID)
     if (session.revert) {
