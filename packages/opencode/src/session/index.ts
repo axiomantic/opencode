@@ -23,6 +23,8 @@ import type { Provider } from "@/provider/provider"
 import { PermissionNext } from "@/permission/next"
 import { Global } from "@/global"
 
+export { SessionOwnership } from "./ownership"
+
 export namespace Session {
   const log = Log.create({ service: "session" })
 
