@@ -1,0 +1,22 @@
+[data-component="permission-origin"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  cursor: pointer;
+
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-large);
+  letter-spacing: var(--letter-spacing-normal);
+  color: var(--text-dimmer);
+
+  &:hover {
+    color: var(--text-base);
+    background: var(--surface-raised-base);
+  }
+}
