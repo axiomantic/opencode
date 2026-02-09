@@ -638,6 +638,78 @@ export type EventFileWatcherUpdated = {
   }
 }
 
+export type SessionOwner = "agent" | "user"
+
+export type EventSessionOwnershipChanged = {
+  type: "session.ownership.changed"
+  properties: {
+    sessionID: string
+    owner: SessionOwner
+    previousOwner: SessionOwner
+    transferredAt: number
+  }
+}
+
+export type EventSessionOwnershipSignal = {
+  type: "session.ownership.signal"
+  properties: {
+    sessionID: string
+    signal: string
+  }
+}
+
+export type PermissionAction = "allow" | "deny" | "ask"
+
+export type PermissionRule = {
+  permission: string
+  pattern: string
+  action: PermissionAction
+}
+
+export type PermissionRuleset = Array<PermissionRule>
+
+export type Session = {
+  id: string
+  slug: string
+  projectID: string
+  directory: string
+  parentID?: string
+  ancestry?: Array<string>
+  depth?: number
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<FileDiff>
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  version: string
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+    mode?: "full" | "conversation" | "code"
+  }
+}
+
+export type EventSessionDeleted = {
+  type: "session.deleted"
+  properties: {
+    info: Session
+  }
+}
+
 export type Todo = {
   /**
    * Brief description of the task
@@ -744,49 +816,6 @@ export type EventCommandExecuted = {
   }
 }
 
-export type PermissionAction = "allow" | "deny" | "ask"
-
-export type PermissionRule = {
-  permission: string
-  pattern: string
-  action: PermissionAction
-}
-
-export type PermissionRuleset = Array<PermissionRule>
-
-export type Session = {
-  id: string
-  slug: string
-  projectID: string
-  directory: string
-  parentID?: string
-  summary?: {
-    additions: number
-    deletions: number
-    files: number
-    diffs?: Array<FileDiff>
-  }
-  share?: {
-    url: string
-  }
-  title: string
-  version: string
-  time: {
-    created: number
-    updated: number
-    compacting?: number
-    archived?: number
-  }
-  permission?: PermissionRuleset
-  revert?: {
-    messageID: string
-    partID?: string
-    snapshot?: string
-    diff?: string
-    mode?: "full" | "conversation" | "code"
-  }
-}
-
 export type EventSessionCreated = {
   type: "session.created"
   properties: {
@@ -796,13 +825,6 @@ export type EventSessionCreated = {
 
 export type EventSessionUpdated = {
   type: "session.updated"
-  properties: {
-    info: Session
-  }
-}
-
-export type EventSessionDeleted = {
-  type: "session.deleted"
   properties: {
     info: Session
   }
@@ -908,6 +930,9 @@ export type Event =
   | EventQuestionRejected
   | EventSessionCompacted
   | EventFileWatcherUpdated
+  | EventSessionOwnershipChanged
+  | EventSessionOwnershipSignal
+  | EventSessionDeleted
   | EventTodoUpdated
   | EventTuiPromptAppend
   | EventTuiCommandExecute
@@ -918,7 +943,6 @@ export type Event =
   | EventCommandExecuted
   | EventSessionCreated
   | EventSessionUpdated
-  | EventSessionDeleted
   | EventSessionDiff
   | EventSessionError
   | EventVcsBranchUpdated
@@ -986,6 +1010,10 @@ export type KeybindsConfig = {
    * Show session timeline
    */
   session_timeline?: string
+  /**
+   * Rewind session to message
+   */
+  session_rewind?: string
   /**
    * Fork session from message
    */
@@ -1980,6 +2008,13 @@ export type McpResource = {
   client: string
 }
 
+export type SessionOwnershipInfo = {
+  sessionID: string
+  owner: SessionOwner
+  transferredAt?: number
+  previousOwner?: SessionOwner
+}
+
 export type TextPartInput = {
   id?: string
   type: "text"
@@ -2916,6 +2951,26 @@ export type SessionStatusResponses = {
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
 
+export type SessionOwnershipListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/session/ownership"
+}
+
+export type SessionOwnershipListResponses = {
+  /**
+   * List of ownership states
+   */
+  200: {
+    data: Array<SessionOwnershipInfo>
+  }
+}
+
+export type SessionOwnershipListResponse = SessionOwnershipListResponses[keyof SessionOwnershipListResponses]
+
 export type SessionDeleteData = {
   body?: never
   path: {
@@ -3088,6 +3143,77 @@ export type SessionTodoResponses = {
 }
 
 export type SessionTodoResponse = SessionTodoResponses[keyof SessionTodoResponses]
+
+export type SessionOwnershipGetData = {
+  body?: never
+  path: {
+    /**
+     * Session ID
+     */
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/ownership"
+}
+
+export type SessionOwnershipGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionOwnershipGetError = SessionOwnershipGetErrors[keyof SessionOwnershipGetErrors]
+
+export type SessionOwnershipGetResponses = {
+  /**
+   * Ownership info
+   */
+  200: SessionOwnershipInfo
+}
+
+export type SessionOwnershipGetResponse = SessionOwnershipGetResponses[keyof SessionOwnershipGetResponses]
+
+export type SessionSignalData = {
+  body?: {
+    /**
+     * Signal type (e.g., 'complete')
+     */
+    signal: string
+  }
+  path: {
+    /**
+     * Session ID
+     */
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/signal"
+}
+
+export type SessionSignalErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionSignalError = SessionSignalErrors[keyof SessionSignalErrors]
+
+export type SessionSignalResponses = {
+  /**
+   * Signal accepted
+   */
+  200: {
+    success: boolean
+  }
+}
+
+export type SessionSignalResponse = SessionSignalResponses[keyof SessionSignalResponses]
 
 export type SessionInitData = {
   body?: {

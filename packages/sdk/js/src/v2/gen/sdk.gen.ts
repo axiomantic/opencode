@@ -117,6 +117,9 @@ import type {
   SessionMessageResponses,
   SessionMessagesErrors,
   SessionMessagesResponses,
+  SessionOwnershipGetErrors,
+  SessionOwnershipGetResponses,
+  SessionOwnershipListResponses,
   SessionPromptAsyncErrors,
   SessionPromptAsyncResponses,
   SessionPromptErrors,
@@ -127,6 +130,8 @@ import type {
   SessionShareResponses,
   SessionShellErrors,
   SessionShellResponses,
+  SessionSignalErrors,
+  SessionSignalResponses,
   SessionStatusErrors,
   SessionStatusResponses,
   SessionSummarizeErrors,
@@ -925,6 +930,57 @@ export class Experimental extends HeyApiClient {
   }
 }
 
+export class Ownership extends HeyApiClient {
+  /**
+   * List ownership states
+   *
+   * Get ownership state for all sessions that have explicit ownership set.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "directory" }] }])
+    return (options?.client ?? this.client).get<SessionOwnershipListResponses, unknown, ThrowOnError>({
+      url: "/session/ownership",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session ownership
+   *
+   * Retrieve the ownership state for a specific session.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionOwnershipGetResponses, SessionOwnershipGetErrors, ThrowOnError>({
+      url: "/session/{sessionID}/ownership",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Session extends HeyApiClient {
   /**
    * List sessions
@@ -1178,6 +1234,43 @@ export class Session extends HeyApiClient {
       url: "/session/{sessionID}/todo",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Signal session
+   *
+   * Send a signal to a session, such as completion notification.
+   */
+  public signal<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      signal?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "signal" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionSignalResponses, SessionSignalErrors, ThrowOnError>({
+      url: "/session/{sessionID}/signal",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
@@ -1769,6 +1862,11 @@ export class Session extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _ownership?: Ownership
+  get ownership(): Ownership {
+    return (this._ownership ??= new Ownership({ client: this.client }))
   }
 }
 
