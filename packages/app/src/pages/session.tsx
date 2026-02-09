@@ -69,6 +69,8 @@ import {
   SortableTerminalTab,
   NewSessionView,
 } from "@/components/session"
+import { SessionBreadcrumbs } from "@/components/session-breadcrumbs"
+import { ReturnControlButton } from "@/components/session-control"
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
 
@@ -1966,6 +1968,9 @@ export default function Page() {
                                 centered(),
                             }}
                           >
+                            <Show when={info()?.parentID}>
+                              <SessionBreadcrumbs sessionID={params.id!} />
+                            </Show>
                             <div class="h-10 flex items-center gap-1">
                               <Show when={info()?.parentID}>
                                 <IconButton
@@ -1979,7 +1984,10 @@ export default function Page() {
                                 />
                               </Show>
                               <Show when={info()?.title}>
-                                <h1 class="text-16-medium text-text-strong truncate">{info()?.title}</h1>
+                                <h1 class="text-16-medium text-text-strong truncate flex-1">{info()?.title}</h1>
+                              </Show>
+                              <Show when={info()?.parentID}>
+                                <ReturnControlButton sessionID={params.id!} />
                               </Show>
                             </div>
                           </div>
