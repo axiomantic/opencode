@@ -42,6 +42,7 @@ import { TaskTool } from "@/tool/task"
 import { Tool } from "@/tool/tool"
 import { PermissionNext } from "@/permission/next"
 import { SessionStatus } from "./status"
+import { SessionOwnership } from "./ownership"
 import { LLM } from "./llm"
 import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
@@ -152,6 +153,11 @@ export namespace SessionPrompt {
   export const prompt = fn(PromptInput, async (input) => {
     const session = await Session.get(input.sessionID)
     await SessionRevert.cleanup(session)
+
+    // Detect takeover if this is a subagent session being prompted by user
+    if (session.parentID && SessionOwnership.get(input.sessionID) === "agent") {
+      SessionOwnership.transfer(input.sessionID, "user")
+    }
 
     const message = await createUserMessage(input)
     await Session.touch(input.sessionID)
