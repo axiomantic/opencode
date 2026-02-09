@@ -69,6 +69,28 @@ type PendingPrompt = {
 
 const pending = new Map<string, PendingPrompt>()
 
+// Queue for messages sent while the session is busy
+export interface QueuedMessage {
+  id: string
+  text: string
+  context: Array<{
+    type: "file"
+    path: string
+    selection?: FileSelection
+    comment?: string
+  }>
+  images: Array<{
+    id: string
+    dataUrl: string
+    mime: string
+    filename: string
+  }>
+  timestamp: number
+}
+
+// Per-session message queues
+const messageQueues = new Map<string, QueuedMessage[]>()
+
 interface PromptInputProps {
   class?: string
   ref?: (el: HTMLDivElement) => void
@@ -268,6 +290,67 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       entries: [],
     }),
   )
+
+  // Queue state - synced with per-session map
+  const [queueStore, setQueueStore] = createStore<{ messages: QueuedMessage[] }>({ messages: [] })
+
+  // Sync queue store with session when session changes
+  createEffect(() => {
+    const sessionId = params.id
+    if (!sessionId) {
+      setQueueStore("messages", [])
+      return
+    }
+    const existing = messageQueues.get(sessionId) ?? []
+    setQueueStore("messages", existing)
+  })
+
+  const MAX_QUEUE_SIZE = 10
+
+  const addToQueue = (message: Omit<QueuedMessage, "id" | "timestamp">) => {
+    if (queueStore.messages.length >= MAX_QUEUE_SIZE) {
+      showToast({
+        title: language.t("prompt.queue.full.title"),
+        description: language.t("prompt.queue.full.description", { count: MAX_QUEUE_SIZE }),
+      })
+      return
+    }
+    const newMessage: QueuedMessage = {
+      ...message,
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+    }
+    setQueueStore("messages", (msgs) => {
+      const updated = [...msgs, newMessage]
+      if (params.id) messageQueues.set(params.id, updated)
+      return updated
+    })
+  }
+
+  const removeFromQueue = (id: string) => {
+    setQueueStore("messages", (msgs) => {
+      const updated = msgs.filter((m) => m.id !== id)
+      if (params.id) messageQueues.set(params.id, updated)
+      return updated
+    })
+  }
+
+  const editQueuedMessage = (id: string, newText: string) => {
+    setQueueStore("messages", (msgs) => {
+      const updated = msgs.map((m) => (m.id === id ? { ...m, text: newText } : m))
+      if (params.id) messageQueues.set(params.id, updated)
+      return updated
+    })
+  }
+
+  const clearQueue = () => {
+    setQueueStore("messages", [])
+    if (params.id) {
+      messageQueues.delete(params.id)
+    }
+  }
+
+  const hasQueuedMessages = createMemo(() => queueStore.messages.length > 0)
 
   const clonePromptParts = (prompt: Prompt): Prompt =>
     prompt.map((part) => {
@@ -1127,18 +1210,39 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const handleSubmit = async (event: Event) => {
     event.preventDefault()
 
-    // If the LLM is working, only abort - don't submit anything
-    if (working()) {
-      abort()
-      return
-    }
-
     const currentPrompt = prompt.current()
     const text = currentPrompt.map((part) => ("content" in part ? part.content : "")).join("")
     const images = imageAttachments().slice()
     const mode = store.mode
 
     if (text.trim().length === 0 && images.length === 0) {
+      return
+    }
+
+    // If the LLM is working, queue the message instead of aborting
+    if (working()) {
+      const contextItems = prompt.context.items().map((ctx) => ({
+        type: "file" as const,
+        path: ctx.path,
+        selection: ctx.selection,
+        comment: ctx.comment,
+      }))
+
+      addToQueue({
+        text,
+        context: contextItems,
+        images: images.map((img) => ({
+          id: img.id,
+          dataUrl: img.dataUrl,
+          mime: img.mime,
+          filename: img.filename,
+        })),
+      })
+
+      // Clear the input after queuing
+      prompt.reset()
+      setStore("mode", "normal")
+      setStore("popover", null)
       return
     }
 
@@ -1623,6 +1727,66 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     })
   }
 
+  // Process queued messages when session becomes idle
+  const processQueue = () => {
+    const messages = queueStore.messages
+    if (messages.length === 0) return
+
+    // Merge all queued message texts
+    const mergedText = messages.map((m) => m.text).join("\n\n")
+
+    // Collect and deduplicate context items
+    const allContext = messages.flatMap((m) => m.context)
+    const seen = new Set<string>()
+    const mergedContext = allContext.filter((ctx) => {
+      const key = `${ctx.path}:${ctx.selection?.startLine ?? ""}:${ctx.selection?.endLine ?? ""}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
+    // Collect all images
+    const mergedImages = messages.flatMap((m) =>
+      m.images.map((img) => ({
+        type: "image" as const,
+        id: img.id,
+        dataUrl: img.dataUrl,
+        mime: img.mime,
+        filename: img.filename,
+      })),
+    )
+
+    // Clear the queue
+    clearQueue()
+
+    // Set the prompt with merged content
+    const textPart = { type: "text" as const, content: mergedText, start: 0, end: mergedText.length }
+    prompt.set([textPart, ...mergedImages], mergedText.length)
+
+    // Add context items
+    for (const ctx of mergedContext) {
+      prompt.context.add(ctx)
+    }
+
+    // Trigger submit directly
+    requestAnimationFrame(() => {
+      handleSubmit(new Event("submit"))
+    })
+  }
+
+  // Watch for idle state to process queue (defer to skip initial render)
+  createEffect(
+    on(
+      () => ({ isWorking: working(), hasQueue: hasQueuedMessages() }),
+      ({ isWorking, hasQueue }) => {
+        if (!isWorking && hasQueue) {
+          processQueue()
+        }
+      },
+      { defer: true },
+    ),
+  )
+
   return (
     <div class="relative size-full _max-h-[320px] flex flex-col gap-3">
       <Show when={store.popover}>
@@ -1814,6 +1978,81 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       </Show>
                     </div>
                   </Tooltip>
+                )
+              }}
+            </For>
+          </div>
+        </Show>
+        <Show when={hasQueuedMessages()}>
+          <div class="flex flex-col gap-2 px-3 pt-3">
+            <div class="flex items-center gap-2">
+              <span class="text-12-semibold text-text-primary">{language.t("prompt.queue.title")}</span>
+              <span class="text-12-regular text-text-weak">
+                {language.t("prompt.queue.status", { count: queueStore.messages.length })}
+              </span>
+            </div>
+            <For each={queueStore.messages}>
+              {(msg) => {
+                const [editing, setEditing] = createSignal(false)
+                const [editText, setEditText] = createSignal(msg.text)
+                return (
+                  <div class="flex items-start gap-2 p-2 rounded-md bg-surface-base border border-border-base group">
+                    <Show
+                      when={editing()}
+                      fallback={
+                        <>
+                          <div class="flex-1 text-12-regular text-text-strong truncate">{msg.text}</div>
+                          <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button
+                              size="small"
+                              variant="ghost"
+                              onClick={() => {
+                                setEditText(msg.text)
+                                setEditing(true)
+                              }}
+                            >
+                              {language.t("prompt.queue.edit")}
+                            </Button>
+                            <Button size="small" variant="ghost" onClick={() => removeFromQueue(msg.id)}>
+                              {language.t("prompt.queue.remove")}
+                            </Button>
+                          </div>
+                        </>
+                      }
+                    >
+                      <input
+                        type="text"
+                        value={editText()}
+                        onInput={(e) => setEditText(e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            editQueuedMessage(msg.id, editText())
+                            setEditing(false)
+                          }
+                          if (e.key === "Escape") {
+                            setEditing(false)
+                          }
+                        }}
+                        class="flex-1 text-12-regular text-text-strong bg-transparent border-none outline-none"
+                        autofocus
+                      />
+                      <div class="flex items-center gap-1">
+                        <Button
+                          size="small"
+                          variant="ghost"
+                          onClick={() => {
+                            editQueuedMessage(msg.id, editText())
+                            setEditing(false)
+                          }}
+                        >
+                          {language.t("prompt.queue.save")}
+                        </Button>
+                        <Button size="small" variant="ghost" onClick={() => setEditing(false)}>
+                          {language.t("prompt.queue.cancel")}
+                        </Button>
+                      </div>
+                    </Show>
+                  </div>
                 )
               }}
             </For>

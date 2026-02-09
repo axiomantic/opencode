@@ -232,6 +232,15 @@ export const dict = {
   "prompt.action.send": "Send",
   "prompt.action.stop": "Stop",
 
+  "prompt.queue.title": "Queued",
+  "prompt.queue.edit": "Edit",
+  "prompt.queue.remove": "Remove",
+  "prompt.queue.status": "Queued ({{count}})",
+  "prompt.queue.save": "Save",
+  "prompt.queue.cancel": "Cancel",
+  "prompt.queue.full.title": "Queue full",
+  "prompt.queue.full.description": "Maximum {{count}} messages can be queued",
+
   "prompt.toast.pasteUnsupported.title": "Unsupported paste",
   "prompt.toast.pasteUnsupported.description": "Only images or PDFs can be pasted here.",
   "prompt.toast.modelAgentRequired.title": "Select an agent and model",
