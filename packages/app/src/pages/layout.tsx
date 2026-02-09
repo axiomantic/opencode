@@ -678,18 +678,20 @@ export default function Layout(props: ParentProps) {
         const expanded = store.workspaceExpanded[dir] ?? dir === project.worktree
         const active = dir === activeDir
         if (!expanded && !active) continue
+        const root = workspaceKey(dir)
         const [dirStore] = globalSync.child(dir, { bootstrap: true })
         const dirSessions = dirStore.session
-          .filter((session) => session.directory === dirStore.path.directory)
+          .filter((session) => workspaceKey(session.directory) === root)
           .filter((session) => !session.parentID && !session.time?.archived)
           .toSorted(compare)
         result.push(...dirSessions)
       }
       return result
     }
+    const root = workspaceKey(project.worktree)
     const [projectStore] = globalSync.child(project.worktree)
     return projectStore.session
-      .filter((session) => session.directory === projectStore.path.directory)
+      .filter((session) => workspaceKey(session.directory) === root)
       .filter((session) => !session.parentID && !session.time?.archived)
       .toSorted(compare)
   })
@@ -2134,9 +2136,10 @@ export default function Layout(props: ParentProps) {
       pendingRename: false,
     })
     const slug = createMemo(() => base64Encode(props.directory))
+    const root = createMemo(() => workspaceKey(props.directory))
     const sessions = createMemo(() =>
       workspaceStore.session
-        .filter((session) => session.directory === workspaceStore.path.directory)
+        .filter((session) => workspaceKey(session.directory) === root())
         .filter((session) => !session.parentID && !session.time?.archived)
         .toSorted(sortSessions(Date.now())),
     )
@@ -2601,9 +2604,10 @@ export default function Layout(props: ParentProps) {
   const LocalWorkspace = (props: { project: LocalProject; mobile?: boolean }): JSX.Element => {
     const [workspaceStore, setWorkspaceStore] = globalSync.child(props.project.worktree)
     const slug = createMemo(() => base64Encode(props.project.worktree))
+    const root = createMemo(() => workspaceKey(props.project.worktree))
     const sessions = createMemo(() =>
       workspaceStore.session
-        .filter((session) => session.directory === workspaceStore.path.directory)
+        .filter((session) => workspaceKey(session.directory) === root())
         .filter((session) => !session.parentID && !session.time?.archived)
         .toSorted(sortSessions(Date.now())),
     )
