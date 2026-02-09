@@ -100,4 +100,20 @@ export namespace SessionOwnership {
   export function list(): Info[] {
     return Object.values(state())
   }
+
+  // Cleanup state on session deletion
+  const SessionDeleted = BusEvent.define(
+    "session.deleted",
+    z.object({
+      info: z.object({
+        id: z.string(),
+      }),
+    }),
+  )
+
+  export function init() {
+    Bus.subscribe(SessionDeleted, (evt) => {
+      delete state()[evt.properties.info.id]
+    })
+  }
 }

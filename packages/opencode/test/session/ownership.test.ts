@@ -3,7 +3,7 @@ import path from "path"
 import { Instance } from "../../src/project/instance"
 import { Bus } from "../../src/bus"
 import { Log } from "../../src/util/log"
-import { SessionOwnership } from "../../src/session/ownership"
+import { SessionOwnership, Session } from "../../src/session"
 
 const projectRoot = path.join(__dirname, "../..")
 Log.init({ print: false })
@@ -171,6 +171,47 @@ describe("SessionOwnership", () => {
 
     test("exports MAX_ANCESTRY_DEPTH_WARNING", () => {
       expect(SessionOwnership.MAX_ANCESTRY_DEPTH_WARNING).toBe(10)
+    })
+  })
+
+  describe("cleanup on session deletion", () => {
+    test("removes ownership state when session is deleted", async () => {
+      await Instance.provide({
+        directory: projectRoot,
+        fn: async () => {
+          // Initialize the subscription
+          SessionOwnership.init()
+
+          const sessionID = "session_to_delete"
+
+          // Set ownership state
+          SessionOwnership.transfer(sessionID, "user")
+          expect(SessionOwnership.get(sessionID)).toBe("user")
+          expect(SessionOwnership.list().some((s) => s.sessionID === sessionID)).toBe(true)
+
+          // Publish session deleted event
+          await Bus.publish(Session.Event.Deleted, {
+            info: {
+              id: sessionID,
+              slug: "test",
+              projectID: "project_test",
+              directory: "/tmp/test",
+              ancestry: [],
+              depth: 0,
+              title: "Test Session",
+              version: "1.0.0",
+              time: {
+                created: Date.now(),
+                updated: Date.now(),
+              },
+            },
+          })
+
+          // Ownership state should be cleaned up
+          expect(SessionOwnership.get(sessionID)).toBe("agent") // defaults to agent when not found
+          expect(SessionOwnership.list().some((s) => s.sessionID === sessionID)).toBe(false)
+        },
+      })
     })
   })
 })
