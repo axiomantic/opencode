@@ -11,6 +11,27 @@ import { iife } from "@/util/iife"
 import { defer } from "@/util/defer"
 import { Config } from "../config/config"
 import { PermissionNext } from "@/permission/next"
+import { SessionOwnership } from "@/session/ownership"
+
+export const CompletionStatus = z.enum(["complete", "interrupted", "takeover"])
+export type CompletionStatus = z.infer<typeof CompletionStatus>
+
+export async function waitForUserSignal(sessionID: string): Promise<void> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      unsub()
+      SessionOwnership.signal(sessionID, "complete")
+      resolve()
+    }, SessionOwnership.OWNERSHIP_TIMEOUT_MS)
+
+    const unsub = Bus.subscribe(SessionOwnership.Event.SignalComplete, (evt) => {
+      if (evt.properties.sessionID !== sessionID) return
+      clearTimeout(timeout)
+      unsub()
+      resolve()
+    })
+  })
+}
 
 const parameters = z.object({
   description: z.string().describe("A short (3-5 words) description of the task"),
@@ -114,6 +135,15 @@ export const TaskTool = Tool.define("task", async (ctx) => {
 
       const messageID = Identifier.ascending("message")
       const parts: Record<string, { id: string; tool: string; state: { status: string; title?: string } }> = {}
+      const state = { completionStatus: "complete" as CompletionStatus }
+
+      const unsubOwnership = Bus.subscribe(SessionOwnership.Event.Changed, (evt) => {
+        if (evt.properties.sessionID !== session.id) return
+        if (evt.properties.owner === "user") {
+          state.completionStatus = "takeover"
+        }
+      })
+
       const unsub = Bus.subscribe(MessageV2.Event.PartUpdated, async (evt) => {
         if (evt.properties.part.sessionID !== session.id) return
         if (evt.properties.part.messageID === messageID) return
@@ -160,7 +190,12 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         parts: promptParts,
       }).finally(() => {
         unsub()
+        unsubOwnership()
       })
+
+      if (state.completionStatus === "takeover") {
+        await waitForUserSignal(session.id)
+      }
 
       const messages = await Session.messages({ sessionID: session.id })
       const summary = messages
@@ -176,7 +211,15 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         }))
       const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
 
-      const output = text + "\n\n" + ["<task_metadata>", `session_id: ${session.id}`, "</task_metadata>"].join("\n")
+      const output =
+        text +
+        "\n\n" +
+        [
+          "<task_metadata>",
+          `session_id: ${session.id}`,
+          `completion_status: ${state.completionStatus}`,
+          "</task_metadata>",
+        ].join("\n")
 
       return {
         title: params.description,
@@ -184,6 +227,7 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           summary,
           sessionId: session.id,
           model,
+          completionStatus: state.completionStatus,
         },
         output,
       }
