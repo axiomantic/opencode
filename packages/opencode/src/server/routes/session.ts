@@ -514,13 +514,25 @@ export const SessionRoutes = lazy(() =>
           providerID: z.string(),
           modelID: z.string(),
           auto: z.boolean().optional().default(false),
+          fromMessageID: z.string().optional(),
         }),
       ),
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
         const session = await Session.get(sessionID)
-        await SessionRevert.cleanup(session)
+
+        // If fromMessageID is provided, first hide those messages using revert
+        // Mode "conversation" hides messages without touching code
+        if (body.fromMessageID) {
+          await SessionRevert.revert({
+            sessionID,
+            messageID: body.fromMessageID,
+            mode: "conversation",
+          })
+        } else {
+          await SessionRevert.cleanup(session)
+        }
         const msgs = await Session.messages({ sessionID })
         let currentAgent = await Agent.defaultAgent()
         for (let i = msgs.length - 1; i >= 0; i--) {

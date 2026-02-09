@@ -5,6 +5,7 @@ import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { Clipboard } from "@tui/util/clipboard"
 import type { PromptInfo } from "@tui/component/prompt/history"
+import { DialogRewind } from "./dialog-rewind"
 
 export function DialogMessage(props: {
   messageID: string
@@ -21,34 +22,13 @@ export function DialogMessage(props: {
       title="Message Actions"
       options={[
         {
-          title: "Revert",
-          value: "session.revert",
-          description: "undo messages and file changes",
+          title: "Rewind",
+          value: "session.rewind",
+          description: "go back to this point with options",
           onSelect: (dialog) => {
-            const msg = message()
-            if (!msg) return
-
-            sdk.client.session.revert({
-              sessionID: props.sessionID,
-              messageID: msg.id,
-            })
-
-            if (props.setPrompt) {
-              const parts = sync.data.part[msg.id]
-              const promptInfo = parts.reduce(
-                (agg, part) => {
-                  if (part.type === "text") {
-                    if (!part.synthetic) agg.input += part.text
-                  }
-                  if (part.type === "file") agg.parts.push(part)
-                  return agg
-                },
-                { input: "", parts: [] as PromptInfo["parts"] },
-              )
-              props.setPrompt(promptInfo)
-            }
-
-            dialog.clear()
+            dialog.replace(() => (
+              <DialogRewind messageID={props.messageID} sessionID={props.sessionID} setPrompt={props.setPrompt} />
+            ))
           },
         },
         {

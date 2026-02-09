@@ -17,11 +17,13 @@ export namespace SessionRevert {
     sessionID: Identifier.schema("session"),
     messageID: Identifier.schema("message"),
     partID: Identifier.schema("part").optional(),
+    mode: z.enum(["full", "conversation", "code"]).optional().default("full"),
   })
-  export type RevertInput = z.infer<typeof RevertInput>
+  export type RevertInput = z.input<typeof RevertInput>
 
   export async function revert(input: RevertInput) {
     SessionPrompt.assertNotBusy(input.sessionID)
+    const mode = input.mode ?? "full"
     const all = await Session.messages({ sessionID: input.sessionID })
     let lastUser: MessageV2.User | undefined
     const session = await Session.get(input.sessionID)
@@ -46,6 +48,7 @@ export namespace SessionRevert {
             revert = {
               messageID: !partID && lastUser ? lastUser.id : msg.info.id,
               partID,
+              mode,
             }
           }
           remaining.push(part)
@@ -54,10 +57,13 @@ export namespace SessionRevert {
     }
 
     if (revert) {
-      const session = await Session.get(input.sessionID)
-      revert.snapshot = session.revert?.snapshot ?? (await Snapshot.track())
-      await Snapshot.revert(patches)
-      if (revert.snapshot) revert.diff = await Snapshot.diff(revert.snapshot)
+      // Handle code restoration based on mode
+      if (mode === "full" || mode === "code") {
+        revert.snapshot = session.revert?.snapshot ?? (await Snapshot.track())
+        await Snapshot.revert(patches)
+        if (revert.snapshot) revert.diff = await Snapshot.diff(revert.snapshot)
+      }
+
       const rangeMessages = all.filter((msg) => msg.info.id >= revert!.messageID)
       const diffs = await SessionSummary.computeDiff({ messages: rangeMessages })
       await Storage.write(["session_diff", input.sessionID], diffs)
@@ -92,6 +98,16 @@ export namespace SessionRevert {
   export async function cleanup(session: Session.Info) {
     if (!session.revert) return
     const sessionID = session.id
+
+    // Code-only mode: just clear revert state, don't remove messages
+    if (session.revert.mode === "code") {
+      await Session.update(sessionID, (draft) => {
+        draft.revert = undefined
+      })
+      return
+    }
+
+    // For full and conversation modes, remove messages
     let msgs = await Session.messages({ sessionID })
     const messageID = session.revert.messageID
     const [preserve, remove] = splitWhen(msgs, (x) => x.info.id === messageID)

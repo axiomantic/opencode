@@ -1015,7 +1015,10 @@ export function Session() {
                               paddingLeft={2}
                               backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
                             >
-                              <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
+                              <text fg={theme.textMuted}>
+                                {revert()!.reverted.length} message{revert()!.reverted.length !== 1 ? "s" : ""}{" "}
+                                {session()?.revert?.mode === "code" ? "code reverted" : "reverted"}
+                              </text>
                               <text fg={theme.textMuted}>
                                 <span style={{ fg: theme.text }}>{keybind.print("messages_redo")}</span> or /redo to
                                 restore
@@ -1042,7 +1045,11 @@ export function Session() {
                         )
                       })()}
                     </Match>
-                    <Match when={revert()?.messageID && message.id >= revert()!.messageID}>
+                    <Match
+                      when={
+                        revert()?.messageID && message.id >= revert()!.messageID && session()?.revert?.mode !== "code"
+                      }
+                    >
                       <></>
                     </Match>
                     <Match when={message.role === "user"}>

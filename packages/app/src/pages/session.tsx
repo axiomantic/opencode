@@ -47,6 +47,7 @@ import FileTree from "@/components/file-tree"
 import { DialogSelectModel } from "@/components/dialog-select-model"
 import { DialogSelectMcp } from "@/components/dialog-select-mcp"
 import { DialogFork } from "@/components/dialog-fork"
+import { DialogRewind } from "@/components/dialog-rewind"
 import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { useNavigate, useParams } from "@solidjs/router"
@@ -914,6 +915,17 @@ export default function Page() {
         // Navigate to the message before the new revert point
         const priorMsg = findLast(userMessages(), (x) => x.id < nextMessage.id)
         setActiveMessage(priorMsg)
+      },
+    },
+    {
+      id: "session.rewind",
+      title: language.t("command.session.rewind"),
+      description: language.t("command.session.rewind.description"),
+      category: language.t("command.category.session"),
+      slash: "rewind",
+      disabled: !params.id || visibleUserMessages().length === 0,
+      onSelect: () => {
+        dialog.show(() => <DialogRewind />)
       },
     },
     {

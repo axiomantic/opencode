@@ -1393,6 +1393,7 @@ export class Session extends HeyApiClient {
       providerID?: string
       modelID?: string
       auto?: boolean
+      fromMessageID?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1406,6 +1407,7 @@ export class Session extends HeyApiClient {
             { in: "body", key: "providerID" },
             { in: "body", key: "modelID" },
             { in: "body", key: "auto" },
+            { in: "body", key: "fromMessageID" },
           ],
         },
       ],
@@ -1709,6 +1711,7 @@ export class Session extends HeyApiClient {
       directory?: string
       messageID?: string
       partID?: string
+      mode?: "full" | "conversation" | "code"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1721,6 +1724,7 @@ export class Session extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "body", key: "messageID" },
             { in: "body", key: "partID" },
+            { in: "body", key: "mode" },
           ],
         },
       ],
@@ -2041,6 +2045,7 @@ export class Oauth extends HeyApiClient {
       providerID: string
       directory?: string
       method?: number
+      baseProvider?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2052,6 +2057,7 @@ export class Oauth extends HeyApiClient {
             { in: "path", key: "providerID" },
             { in: "query", key: "directory" },
             { in: "body", key: "method" },
+            { in: "body", key: "baseProvider" },
           ],
         },
       ],
