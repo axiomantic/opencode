@@ -56,6 +56,8 @@ export namespace Session {
       projectID: z.string(),
       directory: z.string(),
       parentID: Identifier.schema("session").optional(),
+      ancestry: z.array(Identifier.schema("session")).default([]),
+      depth: z.number().int().min(0).default(0),
       summary: z
         .object({
           additions: z.number(),
@@ -211,6 +213,15 @@ export namespace Session {
     directory: string
     permission?: PermissionNext.Ruleset
   }) {
+    let ancestry: string[] = []
+    let depth = 0
+    if (input.parentID) {
+      const parent = await get(input.parentID)
+      if (parent) {
+        ancestry = [input.parentID, ...parent.ancestry]
+        depth = parent.depth + 1
+      }
+    }
     const result: Info = {
       id: Identifier.descending("session", input.id),
       slug: Slug.create(),
@@ -218,6 +229,8 @@ export namespace Session {
       projectID: Instance.project.id,
       directory: input.directory,
       parentID: input.parentID,
+      ancestry,
+      depth,
       title: input.title ?? createDefaultTitle(!!input.parentID),
       permission: input.permission,
       time: {
