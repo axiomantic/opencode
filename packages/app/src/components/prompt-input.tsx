@@ -1127,13 +1127,18 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const handleSubmit = async (event: Event) => {
     event.preventDefault()
 
+    // If the LLM is working, only abort - don't submit anything
+    if (working()) {
+      abort()
+      return
+    }
+
     const currentPrompt = prompt.current()
     const text = currentPrompt.map((part) => ("content" in part ? part.content : "")).join("")
     const images = imageAttachments().slice()
     const mode = store.mode
 
     if (text.trim().length === 0 && images.length === 0) {
-      if (working()) abort()
       return
     }
 
