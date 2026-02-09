@@ -18,10 +18,9 @@ import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { usePlatform } from "@/context/platform"
-import { DialogSelectModel } from "./dialog-select-model"
 import { DialogSelectProvider } from "./dialog-select-provider"
 
-export function DialogConnectProvider(props: { provider: string }) {
+export function DialogAddProfile(props: { providerType: string }) {
   const dialog = useDialog()
   const globalSync = useGlobalSync()
   const globalSDK = useGlobalSDK()
@@ -38,17 +37,21 @@ export function DialogConnectProvider(props: { provider: string }) {
     timer.current = undefined
   })
 
-  const provider = createMemo(() => globalSync.data.provider.all.find((x) => x.id === props.provider)!)
+  const provider = createMemo(() => globalSync.data.provider.all.find((x) => x.id === props.providerType)!)
   const methods = createMemo(
     () =>
-      globalSync.data.provider_auth[props.provider] ?? [
+      globalSync.data.provider_auth[props.providerType] ?? [
         {
           type: "api",
           label: language.t("provider.connect.method.apiKey"),
         },
       ],
   )
+
   const [store, setStore] = createStore({
+    step: "name" as "name" | "method" | "auth",
+    profileName: "",
+    profileId: "",
     methodIndex: undefined as undefined | number,
     authorization: undefined as undefined | ProviderAuthAuthorization,
     state: "pending" as undefined | "pending" | "complete" | "error",
@@ -61,6 +64,33 @@ export function DialogConnectProvider(props: { provider: string }) {
     if (!value) return ""
     if (value.type === "api") return language.t("provider.connect.method.apiKey")
     return value.label ?? ""
+  }
+
+  function generateProfileId(name: string) {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+  }
+
+  function handleNameSubmit(e: SubmitEvent) {
+    e.preventDefault()
+    const form = e.currentTarget as HTMLFormElement
+    const formData = new FormData(form)
+    const name = formData.get("profileName") as string
+
+    if (!name?.trim()) return
+
+    const id = generateProfileId(name)
+    setStore("profileName", name)
+    setStore("profileId", id)
+
+    if (methods().length === 1) {
+      setStore("step", "auth")
+      selectMethod(0)
+    } else {
+      setStore("step", "method")
+    }
   }
 
   async function selectMethod(index: number) {
@@ -76,6 +106,7 @@ export function DialogConnectProvider(props: { provider: string }) {
         draft.authorization = undefined
         draft.state = undefined
         draft.error = undefined
+        draft.step = "auth"
       }),
     )
 
@@ -85,8 +116,9 @@ export function DialogConnectProvider(props: { provider: string }) {
       await globalSDK.client.provider.oauth
         .authorize(
           {
-            providerID: props.provider,
+            providerID: store.profileId,
             method: index,
+            baseProvider: props.providerType,
           },
           { throwOnError: true },
         )
@@ -126,9 +158,6 @@ export function DialogConnectProvider(props: { provider: string }) {
   }
 
   onMount(() => {
-    if (methods().length === 1) {
-      selectMethod(0)
-    }
     document.addEventListener("keydown", handleKey)
     onCleanup(() => {
       document.removeEventListener("keydown", handleKey)
@@ -136,28 +165,39 @@ export function DialogConnectProvider(props: { provider: string }) {
   })
 
   async function complete() {
+    // Save profile config with type field
+    await globalSync.updateConfig({
+      provider: {
+        [store.profileId]: {
+          type: props.providerType,
+          name: store.profileName,
+        },
+      },
+    })
+
     await globalSDK.client.global.dispose()
     dialog.close()
     showToast({
       variant: "success",
       icon: "circle-check",
-      title: language.t("provider.connect.toast.connected.title", { provider: provider().name }),
-      description: language.t("provider.connect.toast.connected.description", { provider: provider().name }),
+      title: "Profile connected",
+      description: `${store.profileName} has been connected successfully.`,
     })
   }
 
   function goBack() {
-    if (methods().length === 1) {
-      dialog.show(() => <DialogSelectProvider />)
+    if (store.step === "auth") {
+      if (methods().length === 1) {
+        setStore("step", "name")
+      } else {
+        setStore("step", "method")
+        setStore("methodIndex", undefined)
+        setStore("authorization", undefined)
+      }
       return
     }
-    if (store.authorization) {
-      setStore("authorization", undefined)
-      setStore("methodIndex", undefined)
-      return
-    }
-    if (store.methodIndex) {
-      setStore("methodIndex", undefined)
+    if (store.step === "method") {
+      setStore("step", "name")
       return
     }
     dialog.show(() => <DialogSelectProvider />)
@@ -177,19 +217,31 @@ export function DialogConnectProvider(props: { provider: string }) {
     >
       <div class="flex flex-col gap-6 px-2.5 pb-3">
         <div class="px-2.5 flex gap-4 items-center">
-          <ProviderIcon id={props.provider as IconName} class="size-5 shrink-0 icon-strong-base" />
-          <div class="text-16-medium text-text-strong">
-            <Switch>
-              <Match when={props.provider === "anthropic" && method()?.label?.toLowerCase().includes("max")}>
-                {language.t("provider.connect.title.anthropicProMax")}
-              </Match>
-              <Match when={true}>{language.t("provider.connect.title", { provider: provider().name })}</Match>
-            </Switch>
-          </div>
+          <ProviderIcon id={props.providerType as IconName} class="size-5 shrink-0 icon-strong-base" />
+          <div class="text-16-medium text-text-strong">Add {provider().name} Profile</div>
         </div>
         <div class="px-2.5 pb-10 flex flex-col gap-6">
           <Switch>
-            <Match when={store.methodIndex === undefined}>
+            <Match when={store.step === "name"}>
+              <div class="text-14-regular text-text-base">
+                Give this profile a name to identify it (e.g., "Work Account" or "Personal").
+              </div>
+              <form onSubmit={handleNameSubmit} class="flex flex-col items-start gap-4">
+                <TextField
+                  autofocus
+                  type="text"
+                  label="Profile Name"
+                  placeholder="e.g., Work Account"
+                  name="profileName"
+                  value={store.profileName}
+                  onChange={(v) => setStore("profileName", v)}
+                />
+                <Button class="w-auto" type="submit" size="large" variant="primary">
+                  Continue
+                </Button>
+              </form>
+            </Match>
+            <Match when={store.step === "method"}>
               <div class="text-14-regular text-text-base">
                 {language.t("provider.connect.selectMethod", { provider: provider().name })}
               </div>
@@ -252,8 +304,10 @@ export function DialogConnectProvider(props: { provider: string }) {
                   }
 
                   setFormStore("error", undefined)
+
+                  // Save auth under profile ID
                   await globalSDK.client.auth.set({
-                    providerID: props.provider,
+                    providerID: store.profileId,
                     auth: {
                       type: "api",
                       key: apiKey,
@@ -264,30 +318,9 @@ export function DialogConnectProvider(props: { provider: string }) {
 
                 return (
                   <div class="flex flex-col gap-6">
-                    <Switch>
-                      <Match when={provider().id === "opencode"}>
-                        <div class="flex flex-col gap-4">
-                          <div class="text-14-regular text-text-base">
-                            {language.t("provider.connect.opencodeZen.line1")}
-                          </div>
-                          <div class="text-14-regular text-text-base">
-                            {language.t("provider.connect.opencodeZen.line2")}
-                          </div>
-                          <div class="text-14-regular text-text-base">
-                            {language.t("provider.connect.opencodeZen.visit.prefix")}
-                            <Link href="https://opencode.ai/zen" tabIndex={-1}>
-                              {language.t("provider.connect.opencodeZen.visit.link")}
-                            </Link>
-                            {language.t("provider.connect.opencodeZen.visit.suffix")}
-                          </div>
-                        </div>
-                      </Match>
-                      <Match when={true}>
-                        <div class="text-14-regular text-text-base">
-                          {language.t("provider.connect.apiKey.description", { provider: provider().name })}
-                        </div>
-                      </Match>
-                    </Switch>
+                    <div class="text-14-regular text-text-base">
+                      Enter your {provider().name} API key for "{store.profileName}".
+                    </div>
                     <form onSubmit={handleSubmit} class="flex flex-col items-start gap-4">
                       <TextField
                         autofocus
@@ -317,10 +350,20 @@ export function DialogConnectProvider(props: { provider: string }) {
                       error: undefined as string | undefined,
                     })
 
+                    let inputRef: HTMLInputElement | undefined
+
+                    function handleWindowFocus() {
+                      inputRef?.focus()
+                    }
+
                     onMount(() => {
                       if (store.authorization?.method === "code" && store.authorization?.url) {
                         platform.openLink(store.authorization.url)
                       }
+                      window.addEventListener("focus", handleWindowFocus)
+                      onCleanup(() => {
+                        window.removeEventListener("focus", handleWindowFocus)
+                      })
                     })
 
                     async function handleSubmit(e: SubmitEvent) {
@@ -338,7 +381,7 @@ export function DialogConnectProvider(props: { provider: string }) {
                       setFormStore("error", undefined)
                       const result = await globalSDK.client.provider.oauth
                         .callback({
-                          providerID: props.provider,
+                          providerID: store.profileId,
                           method: store.methodIndex,
                           code,
                         })
@@ -365,6 +408,7 @@ export function DialogConnectProvider(props: { provider: string }) {
                         </div>
                         <form onSubmit={handleSubmit} class="flex flex-col items-start gap-4">
                           <TextField
+                            ref={inputRef}
                             autofocus
                             type="text"
                             label={language.t("provider.connect.oauth.code.label", { method: method()?.label ?? "" })}
@@ -401,7 +445,7 @@ export function DialogConnectProvider(props: { provider: string }) {
 
                         const result = await globalSDK.client.provider.oauth
                           .callback({
-                            providerID: props.provider,
+                            providerID: store.profileId,
                             method: store.methodIndex,
                           })
                           .then((value) =>

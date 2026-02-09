@@ -9,7 +9,7 @@ import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { type Component, onCleanup, onMount, Show } from "solid-js"
 import { useLocal } from "@/context/local"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
-import { DialogConnectProvider } from "./dialog-connect-provider"
+import { DialogAddProfile } from "./dialog-add-profile"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import { ModelTooltip } from "./model-tooltip"
 import { useLanguage } from "@/context/language"
@@ -97,7 +97,7 @@ export const DialogSelectModelUnpaid: Component = () => {
                 }}
                 onSelect={(x) => {
                   if (!x) return
-                  dialog.show(() => <DialogConnectProvider provider={x.id} />)
+                  dialog.show(() => <DialogAddProfile providerType={x.id} />)
                 }}
               >
                 {(i) => (

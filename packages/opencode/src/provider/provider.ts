@@ -596,6 +596,7 @@ export namespace Provider {
     .object({
       id: z.string(),
       name: z.string(),
+      type: z.string().optional(),
       source: z.enum(["env", "config", "custom", "api"]),
       env: z.string().array(),
       key: z.string().optional(),
@@ -739,6 +740,7 @@ export namespace Provider {
         ...base,
         id,
         name: provider.name ?? id,
+        type: provider.type,
         models: mapValues(base.models, (model) => ({
           ...model,
           providerID: id,

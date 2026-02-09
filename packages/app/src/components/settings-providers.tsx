@@ -9,7 +9,7 @@ import { createMemo, type Component, For, Show } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
-import { DialogConnectProvider } from "./dialog-connect-provider"
+import { DialogAddProfile } from "./dialog-add-profile"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 
@@ -23,8 +23,9 @@ export const SettingsProviders: Component = () => {
   const globalSync = useGlobalSync()
   const providers = useProviders()
 
-  const icon = (id: string): IconName => {
-    if (iconNames.includes(id as IconName)) return id as IconName
+  const icon = (id: string, type?: string): IconName => {
+    const lookupId = type ?? id
+    if (iconNames.includes(lookupId as IconName)) return lookupId as IconName
     return "synthetic"
   }
 
@@ -46,7 +47,10 @@ export const SettingsProviders: Component = () => {
 
   const source = (item: unknown) => (item as ProviderMeta).source
 
+  const isProfile = (item: unknown) => Boolean((item as { type?: string }).type)
+
   const type = (item: unknown) => {
+    if (isProfile(item)) return "Profile"
     const current = source(item)
     if (current === "env") return language.t("settings.providers.tag.environment")
     if (current === "api") return language.t("provider.connect.method.apiKey")
@@ -138,7 +142,7 @@ export const SettingsProviders: Component = () => {
                 {(item) => (
                   <div class="group flex flex-wrap items-center justify-between gap-4 min-h-16 py-3 border-b border-border-weak-base last:border-none">
                     <div class="flex items-center gap-3 min-w-0">
-                      <ProviderIcon id={icon(item.id)} class="size-5 shrink-0 icon-strong-base" />
+                      <ProviderIcon id={icon(item.id, item.type)} class="size-5 shrink-0 icon-strong-base" />
                       <span class="text-14-medium text-text-strong truncate">{item.name}</span>
                       <Tag>{type(item)}</Tag>
                     </div>
@@ -216,7 +220,7 @@ export const SettingsProviders: Component = () => {
                     variant="secondary"
                     icon="plus-small"
                     onClick={() => {
-                      dialog.show(() => <DialogConnectProvider provider={item.id} />)
+                      dialog.show(() => <DialogAddProfile providerType={item.id} />)
                     }}
                   >
                     {language.t("common.connect")}

@@ -55,9 +55,11 @@ export namespace ProviderAuth {
     z.object({
       providerID: z.string(),
       method: z.number(),
+      baseProvider: z.string().optional(),
     }),
     async (input): Promise<Authorization | undefined> => {
-      const auth = await state().then((s) => s.methods[input.providerID])
+      const lookupID = input.baseProvider ?? input.providerID
+      const auth = await state().then((s) => s.methods[lookupID])
       const method = auth.methods[input.method]
       if (method.type === "oauth") {
         const result = await method.authorize()

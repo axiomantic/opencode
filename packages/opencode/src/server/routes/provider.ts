@@ -24,7 +24,7 @@ export const ProviderRoutes = lazy(() =>
               "application/json": {
                 schema: resolver(
                   z.object({
-                    all: ModelsDev.Provider.array(),
+                    all: Provider.Info.array(),
                     default: z.record(z.string(), z.string()),
                     connected: z.array(z.string()),
                   }),
@@ -108,14 +108,16 @@ export const ProviderRoutes = lazy(() =>
         "json",
         z.object({
           method: z.number().meta({ description: "Auth method index" }),
+          baseProvider: z.string().optional().meta({ description: "Base provider type for profiles" }),
         }),
       ),
       async (c) => {
         const providerID = c.req.valid("param").providerID
-        const { method } = c.req.valid("json")
+        const { method, baseProvider } = c.req.valid("json")
         const result = await ProviderAuth.authorize({
           providerID,
           method,
+          baseProvider,
         })
         return c.json(result)
       },
