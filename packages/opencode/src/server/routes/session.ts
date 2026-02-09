@@ -9,6 +9,7 @@ import { SessionCompaction } from "../../session/compaction"
 import { SessionRevert } from "../../session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionOwnership } from "@/session/ownership"
 import { Todo } from "../../session/todo"
 import { Agent } from "../../agent/agent"
 import { Snapshot } from "@/snapshot"
@@ -87,6 +88,28 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const result = SessionStatus.list()
         return c.json(result)
+      },
+    )
+    .get(
+      "/ownership",
+      describeRoute({
+        summary: "List ownership states",
+        description: "Get ownership state for all sessions that have explicit ownership set.",
+        operationId: "session.ownership.list",
+        responses: {
+          200: {
+            description: "List of ownership states",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ data: SessionOwnership.Info.array() })),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const result = SessionOwnership.list()
+        return c.json({ data: result })
       },
     )
     .get(
@@ -180,6 +203,73 @@ export const SessionRoutes = lazy(() =>
         const sessionID = c.req.valid("param").sessionID
         const todos = await Todo.get(sessionID)
         return c.json(todos)
+      },
+    )
+    .get(
+      "/:sessionID/ownership",
+      describeRoute({
+        summary: "Get session ownership",
+        description: "Retrieve the ownership state for a specific session.",
+        operationId: "session.ownership.get",
+        responses: {
+          200: {
+            description: "Ownership info",
+            content: {
+              "application/json": {
+                schema: resolver(SessionOwnership.Info),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string().meta({ description: "Session ID" }),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const info = SessionOwnership.getInfo(sessionID)
+        return c.json(info)
+      },
+    )
+    .post(
+      "/:sessionID/signal",
+      describeRoute({
+        summary: "Signal session",
+        description: "Send a signal to a session, such as completion notification.",
+        operationId: "session.signal",
+        responses: {
+          200: {
+            description: "Signal accepted",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ success: z.boolean() })),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string().meta({ description: "Session ID" }),
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          signal: z.string().meta({ description: "Signal type (e.g., 'complete')" }),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        SessionOwnership.signal(sessionID, body.signal)
+        return c.json({ success: true })
       },
     )
     .post(
