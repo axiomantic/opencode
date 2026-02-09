@@ -95,6 +95,14 @@ type State = {
   part: {
     [messageID: string]: Part[]
   }
+  session_ownership: {
+    [sessionID: string]: {
+      sessionID: string
+      owner: "agent" | "user"
+      transferredAt: number
+      previousOwner?: "agent" | "user"
+    }
+  }
 }
 
 type VcsCache = {
@@ -403,6 +411,7 @@ function createGlobalSync() {
           limit: 5,
           message: {},
           part: {},
+          session_ownership: {},
         })
 
         children[directory] = child
@@ -596,6 +605,11 @@ function createGlobalSync() {
               )
             }
           })
+        }),
+        sdk.session.ownership.list().then((x) => {
+          for (const ownership of x.data?.data ?? []) {
+            setStore("session_ownership", ownership.sessionID, ownership)
+          }
         }),
       ]).then(() => {
         setStore("status", "complete")
@@ -946,6 +960,20 @@ function createGlobalSync() {
         sdkFor(directory)
           .lsp.status()
           .then((x) => setStore("lsp", x.data ?? []))
+        break
+      }
+      case "session.ownership.changed": {
+        const { sessionID, owner, previousOwner } = event.properties
+        setStore("session_ownership", sessionID, {
+          sessionID,
+          owner,
+          transferredAt: Date.now(),
+          previousOwner,
+        })
+        break
+      }
+      case "session.ownership.signal": {
+        // Signal events are transient - no state update needed
         break
       }
     }
