@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import path from "path"
 import { Instance } from "../../src/project/instance"
 import { Server } from "../../src/server/server"
@@ -8,14 +8,14 @@ import { Log } from "../../src/util/log"
 const projectRoot = path.join(__dirname, "../..")
 Log.init({ print: false })
 
-// Clear server password for tests to avoid 401 Unauthorized
-const originalPassword = process.env.OPENCODE_SERVER_PASSWORD
-beforeAll(() => {
-  delete process.env.OPENCODE_SERVER_PASSWORD
-})
-afterAll(() => {
-  if (originalPassword) process.env.OPENCODE_SERVER_PASSWORD = originalPassword
-})
+// Helper to create auth headers for tests
+function authHeaders(): HeadersInit {
+  const password = process.env.OPENCODE_SERVER_PASSWORD
+  if (!password) return {}
+  const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode"
+  const encoded = Buffer.from(`${username}:${password}`).toString("base64")
+  return { Authorization: `Basic ${encoded}` }
+}
 
 describe("session ownership routes", () => {
   test("GET /session/:sessionID/ownership returns owner 'agent' by default", async () => {
@@ -25,7 +25,9 @@ describe("session ownership routes", () => {
         const app = Server.App()
         const session = await Session.create({})
 
-        const response = await app.request(`/session/${session.id}/ownership`)
+        const response = await app.request(`/session/${session.id}/ownership`, {
+          headers: authHeaders(),
+        })
         expect(response.status).toBe(200)
 
         const body = await response.json()
@@ -44,7 +46,7 @@ describe("session ownership routes", () => {
 
         const response = await app.request(`/session/${session.id}/signal`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ signal: "complete" }),
         })
         expect(response.status).toBe(200)
@@ -61,7 +63,9 @@ describe("session ownership routes", () => {
       fn: async () => {
         const app = Server.App()
 
-        const response = await app.request("/session/ownership")
+        const response = await app.request("/session/ownership", {
+          headers: authHeaders(),
+        })
         expect(response.status).toBe(200)
 
         const body = await response.json()
