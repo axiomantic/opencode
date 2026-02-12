@@ -1,5 +1,8 @@
 import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { Dialog } from "@opencode-ai/ui/dialog"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
+import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { Tag } from "@opencode-ai/ui/tag"
 import { showToast } from "@opencode-ai/ui/toast"
@@ -10,6 +13,7 @@ import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { DialogAddProfile } from "./dialog-add-profile"
+import { DialogEditProfile } from "./dialog-edit-profile"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 
@@ -47,7 +51,10 @@ export const SettingsProviders: Component = () => {
 
   const source = (item: unknown) => (item as ProviderMeta).source
 
-  const isProfile = (item: unknown) => Boolean((item as { type?: string }).type)
+  const isProfile = (item: unknown): item is { id: string; name: string; type: string; source?: string } => {
+    if (typeof item !== "object" || item === null) return false
+    return typeof (item as { type?: string }).type === "string" && (item as { type?: string }).type!.length > 0
+  }
 
   const type = (item: unknown) => {
     if (isProfile(item)) return "Profile"
@@ -118,6 +125,75 @@ export const SettingsProviders: Component = () => {
       })
   }
 
+  const deleteProfile = async (profileId: string, name: string, closeDialog: () => void) => {
+    try {
+      // Step 1: Remove auth credentials first (more likely to fail)
+      await globalSDK.client.auth.remove({ providerID: profileId })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      showToast({
+        title: language.t("profile.delete.toast.authFailed.title"),
+        description: message,
+      })
+      return
+    }
+
+    try {
+      // Step 2: Remove config entry (null = delete)
+      await globalSync.updateConfig({
+        provider: { [profileId]: null },
+      } as any)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      showToast({
+        title: language.t("profile.delete.toast.configFailed.title"),
+        description: language.t("profile.delete.toast.configFailed.description", { error: message }),
+      })
+      await globalSDK.client.global.dispose().catch(() => undefined)
+      return
+    }
+
+    await globalSDK.client.global.dispose().catch(() => undefined)
+    closeDialog()
+    showToast({
+      variant: "success",
+      icon: "circle-check",
+      title: language.t("profile.delete.toast.success.title", { name }),
+      description: language.t("profile.delete.toast.success.description"),
+    })
+  }
+
+  function DialogDeleteProfile(props: { profileId: string; profileName: string }) {
+    // useDialog() here gets the INNER dialog context (the delete confirmation dialog),
+    // not the parent SettingsProviders dialog. This is critical for dialog.close() to
+    // close the correct dialog.
+    const innerDialog = useDialog()
+    return (
+      <Dialog title={language.t("dialog.profile.delete.title")} fit>
+        <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
+          <div class="flex flex-col gap-1">
+            <span class="text-14-regular text-text-strong">
+              {language.t("profile.delete.confirm", { name: props.profileName })}
+            </span>
+          </div>
+          <div class="flex justify-end gap-2">
+            <Button variant="ghost" size="large" onClick={() => innerDialog.close()}>
+              {language.t("common.cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              size="large"
+              class="bg-surface-critical-base hover:bg-surface-critical-base/90 text-text-invert-strong"
+              onClick={() => void deleteProfile(props.profileId, props.profileName, () => innerDialog.close())}
+            >
+              {language.t("profile.delete.button")}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    )
+  }
+
   return (
     <div class="flex flex-col h-full overflow-y-auto no-scrollbar px-4 pb-10 sm:px-10 sm:pb-10">
       <div class="sticky top-0 z-10 bg-[linear-gradient(to_bottom,var(--surface-raised-stronger-non-alpha)_calc(100%_-_24px),transparent)]">
@@ -143,7 +219,16 @@ export const SettingsProviders: Component = () => {
                   <div class="group flex flex-wrap items-center justify-between gap-4 min-h-16 py-3 border-b border-border-weak-base last:border-none">
                     <div class="flex items-center gap-3 min-w-0">
                       <ProviderIcon id={icon(item.id, item.type)} class="size-5 shrink-0 icon-strong-base" />
-                      <span class="text-14-medium text-text-strong truncate">{item.name}</span>
+                      <div class="flex flex-col min-w-0">
+                        <span class="text-14-medium text-text-strong truncate">{item.name}</span>
+                        <Show when={isProfile(item)}>
+                          {(_) => (
+                            <span class="text-12-regular text-text-weak truncate">
+                              {providers.all().find((p) => p.id === (item as { type: string }).type)?.name ?? (item as { type: string }).type}
+                            </span>
+                          )}
+                        </Show>
+                      </div>
                       <Tag>{type(item)}</Tag>
                     </div>
                     <Show
@@ -154,9 +239,66 @@ export const SettingsProviders: Component = () => {
                         </span>
                       }
                     >
-                      <Button size="large" variant="ghost" onClick={() => void disconnect(item.id, item.name)}>
-                        {language.t("common.disconnect")}
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenu.Trigger
+                          as={IconButton}
+                          icon="dot-grid"
+                          variant="ghost"
+                          class="size-8 rounded-md"
+                          aria-label={language.t("common.moreOptions")}
+                        />
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.Content>
+                            <Show when={isProfile(item)}>
+                              <DropdownMenu.Item
+                                onSelect={() =>
+                                  dialog.show(() => (
+                                    <DialogEditProfile
+                                      profileId={item.id}
+                                      currentName={item.name}
+                                      providerType={(item as { type: string }).type}
+                                    />
+                                  ))
+                                }
+                              >
+                                <DropdownMenu.ItemLabel>{language.t("common.edit")}</DropdownMenu.ItemLabel>
+                              </DropdownMenu.Item>
+                            </Show>
+                            <DropdownMenu.Item
+                              onSelect={() =>
+                                dialog.show(() => (
+                                  <DialogAddProfile
+                                    providerType={isProfile(item) ? (item as { type: string }).type : item.id}
+                                    reauth={{ profileId: item.id, profileName: item.name }}
+                                  />
+                                ))
+                              }
+                            >
+                              <DropdownMenu.ItemLabel>{language.t("profile.reauth.label")}</DropdownMenu.ItemLabel>
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Separator />
+                            <Show
+                              when={isProfile(item)}
+                              fallback={
+                                <DropdownMenu.Item onSelect={() => void disconnect(item.id, item.name)}>
+                                  <DropdownMenu.ItemLabel>{language.t("common.disconnect")}</DropdownMenu.ItemLabel>
+                                </DropdownMenu.Item>
+                              }
+                            >
+                              <DropdownMenu.Item
+                                class="text-text-on-critical-base hover:bg-surface-critical-weak"
+                                onSelect={() =>
+                                  dialog.show(() => (
+                                    <DialogDeleteProfile profileId={item.id} profileName={item.name} />
+                                  ))
+                                }
+                              >
+                                <DropdownMenu.ItemLabel>{language.t("common.delete")}</DropdownMenu.ItemLabel>
+                              </DropdownMenu.Item>
+                            </Show>
+                          </DropdownMenu.Content>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu>
                     </Show>
                   </div>
                 )}

@@ -5,7 +5,8 @@ import { retry } from "@opencode-ai/util/retry"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useGlobalSync } from "./global-sync"
 import { useSDK } from "./sdk"
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part, Session } from "@opencode-ai/sdk/v2/client"
+import type { BrandedSession } from "@/lib/branded-path"
 
 const keyFor = (directory: string, id: string) => `${directory}\n${id}`
 
@@ -157,7 +158,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const sessionReq = hasSession
             ? Promise.resolve()
             : retry(() => client.session.get({ sessionID })).then((session) => {
-                const data = session.data
+                const data = session.data as BrandedSession<Session> | undefined
                 if (!data) return
                 setStore(
                   "session",
@@ -271,7 +272,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const [store, setStore] = globalSync.child(directory)
           setStore("limit", (x) => x + count)
           await client.session.list().then((x) => {
-            const sessions = (x.data ?? [])
+            const sessions = ((x.data ?? []) as BrandedSession<Session>[])
               .filter((s) => !!s?.id)
               .sort((a, b) => cmp(a.id, b.id))
               .slice(0, store.limit)

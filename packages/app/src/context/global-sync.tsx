@@ -44,6 +44,7 @@ import { getFilename } from "@opencode-ai/util/path"
 import { usePlatform } from "./platform"
 import { useLanguage } from "@/context/language"
 import { Persist, persisted } from "@/utils/persist"
+import { type BrandedPath, type BrandedSession, brandPath } from "@/lib/branded-path"
 
 type ProjectMeta = {
   name?: string
@@ -65,8 +66,8 @@ type State = {
   icon: string | undefined
   provider: ProviderListResponse
   config: Config
-  path: Path
-  session: Session[]
+  path: BrandedPath
+  session: BrandedSession<Session>[]
   sessionTotal: number
   session_status: {
     [sessionID: string]: SessionStatus
@@ -310,9 +311,9 @@ function createGlobalSync() {
     return cmp(a.id, b.id)
   }
 
-  function takeRecentSessions(sessions: Session[], limit: number, cutoff: number) {
-    if (limit <= 0) return [] as Session[]
-    const selected: Session[] = []
+  function takeRecentSessions<S extends Session>(sessions: S[], limit: number, cutoff: number) {
+    if (limit <= 0) return [] as S[]
+    const selected: S[] = []
     const seen = new Set<string>()
     for (const session of sessions) {
       if (!session?.id) continue
@@ -329,7 +330,7 @@ function createGlobalSync() {
     return selected
   }
 
-  function trimSessions(input: Session[], options: { limit: number; permission: Record<string, PermissionRequest[]> }) {
+  function trimSessions<S extends Session>(input: S[], options: { limit: number; permission: Record<string, PermissionRequest[]> }) {
     const limit = Math.max(0, options.limit)
     const cutoff = Date.now() - sessionRecentWindow
     const all = input
@@ -394,7 +395,7 @@ function createGlobalSync() {
           icon: icon[0].value,
           provider: { all: [], connected: [], default: {} },
           config: {},
-          path: { state: "", config: "", worktree: "", directory: "", home: "" },
+          path: brandPath({ state: "", config: "", worktree: "", directory: "", home: "" }),
           status: "loading" as const,
           agent: [],
           command: [],
@@ -465,7 +466,7 @@ function createGlobalSync() {
     const promise = globalSDK.client.session
       .list({ directory, roots: true })
       .then((x) => {
-        const nonArchived = (x.data ?? [])
+        const nonArchived = ((x.data ?? []) as BrandedSession<Session>[])
           .filter((s) => !!s?.id)
           .filter((s) => !s.time?.archived)
           .sort((a, b) => cmp(a.id, b.id))
@@ -537,7 +538,7 @@ function createGlobalSync() {
       if (store.status !== "complete") setStore("status", "partial")
 
       Promise.all([
-        sdk.path.get().then((x) => setStore("path", x.data!)),
+        sdk.path.get().then((x) => setStore("path", brandPath(x.data!))),
         sdk.command.list().then((x) => setStore("command", x.data ?? [])),
         sdk.session.status().then((x) => setStore("session_status", x.data!)),
         loadSessions(directory),
@@ -727,7 +728,7 @@ function createGlobalSync() {
         return
       }
       case "session.created": {
-        const info = event.properties.info
+        const info = event.properties.info as BrandedSession<Session>
         const result = Binary.search(store.session, info.id, (s) => s.id)
         if (result.found) {
           setStore("session", result.index, reconcile(info))
@@ -743,7 +744,7 @@ function createGlobalSync() {
         break
       }
       case "session.updated": {
-        const info = event.properties.info
+        const info = event.properties.info as BrandedSession<Session>
         const result = Binary.search(store.session, info.id, (s) => s.id)
         if (info.time.archived) {
           if (result.found) {

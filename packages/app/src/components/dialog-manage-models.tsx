@@ -1,18 +1,22 @@
 import { Dialog } from "@opencode-ai/ui/dialog"
+import { IconButton } from "@opencode-ai/ui/icon-button"
 import { List } from "@opencode-ai/ui/list"
 import { Switch } from "@opencode-ai/ui/switch"
 import { Button } from "@opencode-ai/ui/button"
-import type { Component } from "solid-js"
+import { Show, type Component } from "solid-js"
 import { useLocal } from "@/context/local"
-import { popularProviders } from "@/hooks/use-providers"
+import { popularProviders, useProviders } from "@/hooks/use-providers"
 import { useLanguage } from "@/context/language"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { DialogAddProfile } from "./dialog-add-profile"
+import { DialogEditProfile } from "./dialog-edit-profile"
 import { DialogSelectProvider } from "./dialog-select-provider"
 
 export const DialogManageModels: Component = () => {
   const local = useLocal()
   const language = useLanguage()
   const dialog = useDialog()
+  const providers = useProviders()
 
   const handleConnectProvider = () => {
     dialog.show(() => <DialogSelectProvider />)
@@ -42,6 +46,53 @@ export const DialogManageModels: Component = () => {
           if (popularProviders.includes(aProvider) && !popularProviders.includes(bProvider)) return -1
           if (!popularProviders.includes(aProvider) && popularProviders.includes(bProvider)) return 1
           return popularProviders.indexOf(aProvider) - popularProviders.indexOf(bProvider)
+        }}
+        groupHeader={(category, items) => {
+          const provider = items[0]?.provider
+          if (!provider) return <span>{category}</span>
+
+          const providerData = providers.connected().find((p) => p.id === provider.id)
+          const isProfile =
+            providerData && typeof providerData.type === "string" && providerData.type.length > 0
+
+          return (
+            <div class="flex items-center justify-between w-full">
+              <span>{category}</span>
+              <Show when={isProfile}>
+                <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <IconButton
+                    icon="pencil-line"
+                    variant="ghost"
+                    class="size-6"
+                    aria-label={language.t("common.edit")}
+                    onClick={() =>
+                      dialog.show(() => (
+                        <DialogEditProfile
+                          profileId={provider.id}
+                          currentName={category}
+                          providerType={providerData!.type!}
+                        />
+                      ))
+                    }
+                  />
+                  <IconButton
+                    icon="link"
+                    variant="ghost"
+                    class="size-6"
+                    aria-label={language.t("profile.reauth.label")}
+                    onClick={() =>
+                      dialog.show(() => (
+                        <DialogAddProfile
+                          providerType={providerData!.type!}
+                          reauth={{ profileId: provider.id, profileName: category }}
+                        />
+                      ))
+                    }
+                  />
+                </div>
+              </Show>
+            </div>
+          )
         }}
         onSelect={(x) => {
           if (!x) return

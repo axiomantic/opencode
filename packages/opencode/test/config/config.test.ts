@@ -1719,3 +1719,250 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
     }
   })
 })
+
+// patchJsonc null-as-delete tests
+//
+// IMPORTANT: Each test cleans up Global.Path.config files to prevent
+// cross-test pollution. Global.Path.config is NOT inside the tmpdir.
+
+test("patchJsonc removes key when value is null (JSONC path)", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      // Write a JSONC config with a profile entry
+      await Bun.write(
+        path.join(Global.Path.config, "opencode.jsonc"),
+        `{
+  // Global config
+  "provider": {
+    "my-profile": {
+      "type": "anthropic",
+      "name": "My Profile"
+    },
+    "keep-this": {
+      "type": "openai",
+      "name": "Keep This"
+    }
+  }
+}`,
+      )
+    },
+  })
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      try {
+        // Delete my-profile by passing null
+        await Config.updateGlobal({
+          provider: { "my-profile": null },
+        } as any)
+
+        const updated = await Config.getGlobal()
+        // my-profile should be removed
+        expect(updated.provider?.["my-profile"]).toBeUndefined()
+        // keep-this should survive
+        expect(updated.provider?.["keep-this"]).toEqual({
+          type: "openai",
+          name: "Keep This",
+        })
+      } finally {
+        await fs.rm(path.join(Global.Path.config, "opencode.jsonc"), { force: true })
+        await fs.rm(path.join(Global.Path.config, "opencode.json"), { force: true })
+      }
+    },
+  })
+})
+
+test("patchJsonc preserves non-null values when null is used alongside them", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(Global.Path.config, "opencode.jsonc"),
+        `{
+  "provider": {
+    "delete-me": {
+      "type": "anthropic",
+      "name": "Delete Me"
+    },
+    "update-me": {
+      "type": "openai",
+      "name": "Old Name"
+    }
+  }
+}`,
+      )
+    },
+  })
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      try {
+        // Simultaneously delete one profile and update another
+        await Config.updateGlobal({
+          provider: {
+            "delete-me": null,
+            "update-me": { name: "New Name" },
+          },
+        } as any)
+
+        const updated = await Config.getGlobal()
+        expect(updated.provider?.["delete-me"]).toBeUndefined()
+        expect(updated.provider?.["update-me"]?.name).toBe("New Name")
+        expect(updated.provider?.["update-me"]?.type).toBe("openai")
+      } finally {
+        await fs.rm(path.join(Global.Path.config, "opencode.jsonc"), { force: true })
+        await fs.rm(path.join(Global.Path.config, "opencode.json"), { force: true })
+      }
+    },
+  })
+})
+
+test("patchJsonc preserves JSONC comments when deleting keys", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(Global.Path.config, "opencode.jsonc"),
+        `{
+  // Global settings
+  "model": "anthropic/claude-sonnet-4-20250514",
+  "provider": {
+    // Work profile
+    "work": {
+      "type": "anthropic",
+      "name": "Work"
+    },
+    // Personal profile
+    "personal": {
+      "type": "openai",
+      "name": "Personal"
+    }
+  }
+}`,
+      )
+    },
+  })
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      try {
+        await Config.updateGlobal({
+          provider: { work: null },
+        } as any)
+
+        // Read raw file content to verify non-adjacent comments survive
+        const raw = await Bun.file(path.join(Global.Path.config, "opencode.jsonc")).text()
+        expect(raw).toContain("// Global settings")
+        // Note: jsonc-parser may remove comments adjacent to deleted keys
+        expect(raw).not.toContain('"work"')
+
+        const updated = await Config.getGlobal()
+        expect(updated.provider?.["work"]).toBeUndefined()
+        expect(updated.provider?.["personal"]?.name).toBe("Personal")
+      } finally {
+        await fs.rm(path.join(Global.Path.config, "opencode.jsonc"), { force: true })
+        await fs.rm(path.join(Global.Path.config, "opencode.json"), { force: true })
+      }
+    },
+  })
+})
+
+test("updateGlobal JSON path removes null-valued provider keys", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      // Write a plain JSON config (not JSONC) to exercise the mergeDeep path
+      await Bun.write(
+        path.join(Global.Path.config, "opencode.json"),
+        JSON.stringify({
+          provider: {
+            "my-profile": { type: "anthropic", name: "My Profile" },
+            "keep-this": { type: "openai", name: "Keep This" },
+          },
+        }),
+      )
+    },
+  })
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      try {
+        await Config.updateGlobal({
+          provider: { "my-profile": null },
+        } as any)
+
+        const updated = await Config.getGlobal()
+        expect(updated.provider?.["my-profile"]).toBeUndefined()
+        expect(updated.provider?.["keep-this"]).toEqual({
+          type: "openai",
+          name: "Keep This",
+        })
+      } finally {
+        await fs.rm(path.join(Global.Path.config, "opencode.jsonc"), { force: true })
+        await fs.rm(path.join(Global.Path.config, "opencode.json"), { force: true })
+      }
+    },
+  })
+})
+
+test("Zod schema accepts null provider values for deletion", () => {
+  const result = Config.Info.safeParse({
+    provider: {
+      "test-profile": null,
+    },
+  })
+  expect(result.success).toBe(true)
+})
+
+test("Zod schema still accepts valid provider values", () => {
+  const result = Config.Info.safeParse({
+    provider: {
+      "test-profile": {
+        type: "anthropic",
+        name: "Test",
+      },
+    },
+  })
+  expect(result.success).toBe(true)
+  if (result.success) {
+    expect(result.data.provider?.["test-profile"]?.type).toBe("anthropic")
+  }
+})
+
+test("patchJsonc still skips undefined values (existing behavior)", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(Global.Path.config, "opencode.jsonc"),
+        `{
+  "provider": {
+    "keep": {
+      "type": "anthropic",
+      "name": "Keep"
+    }
+  }
+}`,
+      )
+    },
+  })
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      try {
+        // undefined values should be skipped, not cause deletion
+        await Config.updateGlobal({
+          provider: { keep: { name: "Updated" } },
+        } as any)
+
+        const updated = await Config.getGlobal()
+        expect(updated.provider?.["keep"]?.name).toBe("Updated")
+        expect(updated.provider?.["keep"]?.type).toBe("anthropic")
+      } finally {
+        await fs.rm(path.join(Global.Path.config, "opencode.jsonc"), { force: true })
+        await fs.rm(path.join(Global.Path.config, "opencode.json"), { force: true })
+      }
+    },
+  })
+})

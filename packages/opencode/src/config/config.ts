@@ -1042,7 +1042,7 @@ export namespace Config {
         .optional()
         .describe("Agent configuration, see https://opencode.ai/docs/agents"),
       provider: z
-        .record(z.string(), Provider)
+        .record(z.string(), Provider.or(z.null()))
         .optional()
         .describe("Custom provider configurations and model overrides"),
       mcp: z
@@ -1342,6 +1342,17 @@ export namespace Config {
   }
 
   function patchJsonc(input: string, patch: unknown, path: string[] = []): string {
+    if (patch === null) {
+      // null sentinel = delete this key
+      const edits = modify(input, path, undefined, {
+        formattingOptions: {
+          insertSpaces: true,
+          tabSize: 2,
+        },
+      })
+      return applyEdits(input, edits)
+    }
+
     if (!isRecord(patch)) {
       const edits = modify(input, path, patch, {
         formattingOptions: {
@@ -1405,6 +1416,14 @@ export namespace Config {
       if (!filepath.endsWith(".jsonc")) {
         const existing = parseConfig(before, filepath)
         const merged = mergeDeep(existing, config)
+        // Filter out null-valued keys from provider record (null = delete sentinel)
+        if (merged.provider) {
+          for (const [key, value] of Object.entries(merged.provider)) {
+            if (value === null) {
+              delete (merged.provider as Record<string, unknown>)[key]
+            }
+          }
+        }
         await Bun.write(filepath, JSON.stringify(merged, null, 2))
         return merged
       }

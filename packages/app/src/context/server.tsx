@@ -4,8 +4,9 @@ import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { usePlatform } from "@/context/platform"
 import { Persist, persisted } from "@/utils/persist"
+import { type GitWorktree, asGitWorktree } from "@/lib/branded-path"
 
-type StoredProject = { worktree: string; expanded: boolean }
+type StoredProject = { worktree: GitWorktree; expanded: boolean }
 
 export function normalizeServerUrl(input: string) {
   const trimmed = input.trim()
@@ -165,7 +166,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           if (!key) return
           const current = store.projects[key] ?? []
           if (current.find((x) => x.worktree === directory)) return
-          setStore("projects", key, [{ worktree: directory, expanded: true }, ...current])
+          setStore("projects", key, [{ worktree: asGitWorktree(directory), expanded: true }, ...current])
         },
         close(directory: string) {
           const key = origin()

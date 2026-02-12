@@ -28,10 +28,18 @@ export const SIDECAR_BINARIES: Array<{ rustTarget: string; ocBinary: string; ass
   },
 ]
 
-export const RUST_TARGET = Bun.env.RUST_TARGET
+function detectHostTarget(): string {
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64"
+  const platform = process.platform
+  if (platform === "darwin") return `${arch}-apple-darwin`
+  if (platform === "win32") return `${arch}-pc-windows-msvc`
+  return `${arch}-unknown-linux-gnu`
+}
+
+export const RUST_TARGET = Bun.env.RUST_TARGET ?? Bun.env.TAURI_ENV_TARGET_TRIPLE ?? detectHostTarget()
 
 export function getCurrentSidecar(target = RUST_TARGET) {
-  if (!target && !RUST_TARGET) throw new Error("RUST_TARGET not set")
+  if (!target) throw new Error("RUST_TARGET not set")
 
   const binaryConfig = SIDECAR_BINARIES.find((b) => b.rustTarget === target)
   if (!binaryConfig) throw new Error(`Sidecar configuration not available for Rust target '${RUST_TARGET}'`)

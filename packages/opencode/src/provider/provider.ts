@@ -729,6 +729,7 @@ export namespace Provider {
     // Process provider profiles with type field
     // This clones the base provider's models for profiles before config processing
     for (const [id, provider] of configProviders) {
+      if (!provider) continue
       if (!provider.type) continue
       if (!isProviderAllowed(id)) continue
       const base = database[provider.type]
@@ -763,6 +764,7 @@ export namespace Provider {
 
     // extend database from config
     for (const [providerID, provider] of configProviders) {
+      if (!provider) continue
       const existing = database[providerID]
       const parsed: Info = {
         id: providerID,
@@ -883,6 +885,20 @@ export namespace Provider {
         if (enterpriseAuth) hasAuth = true
       }
 
+      // Check if any provider profile with this type has auth
+      if (!hasAuth) {
+        for (const [profileID, profileConfig] of configProviders) {
+          if (!profileConfig) continue
+          if (profileConfig.type !== providerID) continue
+          if (disabled.has(profileID)) continue
+          const profileAuth = await Auth.get(profileID)
+          if (profileAuth) {
+            hasAuth = true
+            break
+          }
+        }
+      }
+
       if (!hasAuth) continue
       if (!plugin.auth.loader) continue
 
@@ -912,6 +928,23 @@ export namespace Provider {
           }
         }
       }
+
+      // Also load auth for provider profiles whose type matches this plugin's provider
+      for (const [profileID, profileConfig] of configProviders) {
+        if (!profileConfig) continue
+        if (profileConfig.type !== plugin.auth.provider) continue
+        if (disabled.has(profileID)) continue
+        const profileAuth = await Auth.get(profileID)
+        if (!profileAuth) continue
+        if (!database[profileID]) continue
+        const profileOptions = await plugin.auth.loader(
+          () => Auth.get(profileID) as any,
+          database[profileID],
+        )
+        const opts = profileOptions ?? {}
+        const patch: Partial<Info> = providers[profileID] ? { options: opts } : { source: "custom", options: opts }
+        mergeProvider(profileID, patch)
+      }
     }
 
     for (const [providerID, fn] of Object.entries(CUSTOM_LOADERS)) {
@@ -928,10 +961,29 @@ export namespace Provider {
         const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
         mergeProvider(providerID, patch)
       }
+
+      // Also apply custom loader for provider profiles whose type matches this loader key
+      for (const [profileID, profileConfig] of configProviders) {
+        if (!profileConfig) continue
+        if (profileConfig.type !== providerID) continue
+        if (disabled.has(profileID)) continue
+        const profileData = database[profileID]
+        if (!profileData) continue
+        const profileResult = await fn(profileData)
+        if (profileResult && (profileResult.autoload || providers[profileID])) {
+          if (profileResult.getModel) modelLoaders[profileID] = profileResult.getModel
+          const profileOpts = profileResult.options ?? {}
+          const profilePatch: Partial<Info> = providers[profileID]
+            ? { options: profileOpts }
+            : { source: "custom", options: profileOpts }
+          mergeProvider(profileID, profilePatch)
+        }
+      }
     }
 
     // load config
     for (const [providerID, provider] of configProviders) {
+      if (!provider) continue
       const partial: Partial<Info> = { source: "config" }
       if (provider.env) partial.env = provider.env
       if (provider.name) partial.name = provider.name

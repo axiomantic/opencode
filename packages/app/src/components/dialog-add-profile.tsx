@@ -20,7 +20,13 @@ import { useGlobalSync } from "@/context/global-sync"
 import { usePlatform } from "@/context/platform"
 import { DialogSelectProvider } from "./dialog-select-provider"
 
-export function DialogAddProfile(props: { providerType: string }) {
+export function DialogAddProfile(props: {
+  providerType: string
+  reauth?: {
+    profileId: string
+    profileName: string
+  }
+}) {
   const dialog = useDialog()
   const globalSync = useGlobalSync()
   const globalSDK = useGlobalSDK()
@@ -49,12 +55,20 @@ export function DialogAddProfile(props: { providerType: string }) {
   )
 
   const [store, setStore] = createStore({
-    step: "name" as "name" | "method" | "auth",
-    profileName: "",
-    profileId: "",
-    methodIndex: undefined as undefined | number,
+    step: (props.reauth
+      ? methods().length === 1
+        ? "auth"
+        : "method"
+      : "name") as "name" | "method" | "auth",
+    profileName: props.reauth?.profileName ?? "",
+    profileId: props.reauth?.profileId ?? "",
+    methodIndex: (props.reauth && methods().length === 1 ? 0 : undefined) as undefined | number,
     authorization: undefined as undefined | ProviderAuthAuthorization,
-    state: "pending" as undefined | "pending" | "complete" | "error",
+    state: (props.reauth && methods().length === 1 ? "pending" : undefined) as
+      | undefined
+      | "pending"
+      | "complete"
+      | "error",
     error: undefined as string | undefined,
   })
 
@@ -143,7 +157,7 @@ export function DialogAddProfile(props: { providerType: string }) {
         .catch((e) => {
           if (!alive.value) return
           setStore("state", "error")
-          setStore("error", String(e))
+          setStore("error", e instanceof Error ? e.message : String(e))
         })
     }
   }
@@ -164,30 +178,51 @@ export function DialogAddProfile(props: { providerType: string }) {
     })
   })
 
-  async function complete() {
-    // Save profile config with type field
-    await globalSync.updateConfig({
-      provider: {
-        [store.profileId]: {
-          type: props.providerType,
-          name: store.profileName,
-        },
-      },
-    })
+  onMount(() => {
+    if (props.reauth && methods().length === 1) {
+      selectMethod(0)
+    }
+  })
 
-    await globalSDK.client.global.dispose()
+  async function complete() {
+    if (!props.reauth) {
+      // Only save config for new profiles
+      await globalSync.updateConfig({
+        provider: {
+          [store.profileId]: {
+            type: props.providerType,
+            name: store.profileName,
+          },
+        },
+      })
+    }
+
+    await globalSDK.client.global.dispose().catch(() => undefined)
     dialog.close()
     showToast({
       variant: "success",
       icon: "circle-check",
-      title: "Profile connected",
-      description: `${store.profileName} has been connected successfully.`,
+      title: props.reauth
+        ? language.t("profile.reauth.toast.success.title")
+        : "Profile connected",
+      description: props.reauth
+        ? language.t("profile.reauth.toast.success.description", { name: store.profileName })
+        : `${store.profileName} has been connected successfully.`,
     })
   }
 
   function goBack() {
     if (store.step === "auth") {
-      if (methods().length === 1) {
+      if (props.reauth) {
+        if (methods().length === 1) {
+          // Single-method re-auth: back closes dialog
+          dialog.close()
+        } else {
+          setStore("step", "method")
+          setStore("methodIndex", undefined)
+          setStore("authorization", undefined)
+        }
+      } else if (methods().length === 1) {
         setStore("step", "name")
       } else {
         setStore("step", "method")
@@ -197,7 +232,11 @@ export function DialogAddProfile(props: { providerType: string }) {
       return
     }
     if (store.step === "method") {
-      setStore("step", "name")
+      if (props.reauth) {
+        dialog.close()
+      } else {
+        setStore("step", "name")
+      }
       return
     }
     dialog.show(() => <DialogSelectProvider />)
@@ -218,7 +257,11 @@ export function DialogAddProfile(props: { providerType: string }) {
       <div class="flex flex-col gap-6 px-2.5 pb-3">
         <div class="px-2.5 flex gap-4 items-center">
           <ProviderIcon id={props.providerType as IconName} class="size-5 shrink-0 icon-strong-base" />
-          <div class="text-16-medium text-text-strong">Add {provider().name} Profile</div>
+          <div class="text-16-medium text-text-strong">
+            {props.reauth
+              ? language.t("dialog.profile.reauth.title", { name: props.reauth.profileName })
+              : `Add ${provider().name} Profile`}
+          </div>
         </div>
         <div class="px-2.5 pb-10 flex flex-col gap-6">
           <Switch>

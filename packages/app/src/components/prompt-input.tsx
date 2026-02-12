@@ -54,7 +54,8 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { useGlobalSync } from "@/context/global-sync"
 import { usePlatform } from "@/context/platform"
-import { createOpencodeClient, type Message, type Part } from "@opencode-ai/sdk/v2/client"
+import { createOpencodeClient, type Message, type Part, type Session } from "@opencode-ai/sdk/v2/client"
+import type { BrandedSession } from "@/lib/branded-path"
 import { Binary } from "@opencode-ai/util/binary"
 import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
@@ -1321,7 +1322,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!session && isNewSession) {
       session = await client.session
         .create()
-        .then((x) => x.data ?? undefined)
+        .then((x) => (x.data as BrandedSession<Session> | undefined) ?? undefined)
         .catch((err) => {
           showToast({
             title: language.t("prompt.toast.sessionCreateFailed.title"),

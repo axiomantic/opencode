@@ -2602,18 +2602,18 @@ export default function Layout(props: ParentProps) {
   }
 
   const LocalWorkspace = (props: { project: LocalProject; mobile?: boolean }): JSX.Element => {
-    const [workspaceStore, setWorkspaceStore] = globalSync.child(props.project.worktree)
+    const current = createMemo(() => globalSync.child(props.project.worktree))
     const slug = createMemo(() => base64Encode(props.project.worktree))
     const root = createMemo(() => workspaceKey(props.project.worktree))
     const sessions = createMemo(() =>
-      workspaceStore.session
+      current()[0].session
         .filter((session) => workspaceKey(session.directory) === root())
         .filter((session) => !session.parentID && !session.time?.archived)
         .toSorted(sortSessions(Date.now())),
     )
     const children = createMemo(() => {
       const map = new Map<string, string[]>()
-      for (const session of workspaceStore.session) {
+      for (const session of current()[0].session) {
         if (!session.parentID) continue
         const existing = map.get(session.parentID)
         if (existing) {
@@ -2624,11 +2624,14 @@ export default function Layout(props: ParentProps) {
       }
       return map
     })
-    const booted = createMemo((prev) => prev || workspaceStore.status === "complete", false)
+    const booted = createMemo((prev) => {
+      if (prev) return true
+      return current()[0].status === "complete"
+    }, false)
     const loading = createMemo(() => !booted() && sessions().length === 0)
-    const hasMore = createMemo(() => workspaceStore.sessionTotal > sessions().length)
+    const hasMore = createMemo(() => current()[0].sessionTotal > sessions().length)
     const loadMore = async () => {
-      setWorkspaceStore("limit", (limit) => limit + 5)
+      current()[1]("limit", (limit) => limit + 5)
       await globalSync.project.loadSessions(props.project.worktree)
     }
 

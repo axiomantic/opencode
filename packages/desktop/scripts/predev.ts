@@ -1,10 +1,8 @@
 import { $ } from "bun"
 
-import { copyBinaryToSidecarFolder, getCurrentSidecar, windowsify } from "./utils"
+import { copyBinaryToSidecarFolder, getCurrentSidecar, RUST_TARGET, windowsify } from "./utils"
 
-const RUST_TARGET = Bun.env.TAURI_ENV_TARGET_TRIPLE
-
-const sidecarConfig = getCurrentSidecar(RUST_TARGET)
+const sidecarConfig = getCurrentSidecar()
 
 const binaryPath = windowsify(`../opencode/dist/${sidecarConfig.ocBinary}/bin/opencode`)
 

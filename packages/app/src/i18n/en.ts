@@ -153,6 +153,31 @@ export const dict = {
   "provider.disconnect.toast.disconnected.title": "{{provider}} disconnected",
   "provider.disconnect.toast.disconnected.description": "{{provider}} models are no longer available.",
 
+  // Profile edit dialog
+  "dialog.profile.edit.title": "Edit Profile",
+  "profile.edit.name.label": "Profile Name",
+  "profile.edit.toast.success.title": "Profile updated",
+  "profile.edit.toast.success.description": "{{name}} has been updated.",
+
+  // Profile delete dialog
+  "dialog.profile.delete.title": "Delete Profile",
+  "profile.delete.confirm": 'Are you sure you want to delete "{{name}}"? This will remove the profile and its credentials.',
+  "profile.delete.button": "Delete",
+  "profile.delete.toast.success.title": "{{name}} deleted",
+  "profile.delete.toast.success.description": "Profile and credentials have been removed.",
+  "profile.delete.toast.authFailed.title": "Failed to remove credentials",
+  "profile.delete.toast.configFailed.title": "Failed to remove profile config",
+  "profile.delete.toast.configFailed.description": "Credentials were removed but config deletion failed: {{error}}. Try deleting again.",
+
+  // Profile re-auth
+  "dialog.profile.reauth.title": "Re-authenticate {{name}}",
+  "profile.reauth.label": "Re-authenticate",
+  "profile.reauth.toast.success.title": "Re-authenticated",
+  "profile.reauth.toast.success.description": "{{name}} credentials have been refreshed.",
+
+  // Profile actions (dropdown)
+  "profile.actions.label": "Profile actions",
+
   "model.tag.free": "Free",
   "model.tag.latest": "Latest",
   "model.provider.anthropic": "Anthropic",

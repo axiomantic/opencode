@@ -5,6 +5,7 @@ import { useGlobalSync } from "./global-sync"
 import { useGlobalSDK } from "./global-sdk"
 import { useServer } from "./server"
 import { Project } from "@opencode-ai/sdk/v2"
+import { type GitWorktree, asGitWorktree } from "@/lib/branded-path"
 import { Persist, persisted, removePersisted } from "@/utils/persist"
 import { same } from "@/utils/same"
 import { createScrollPersistence, type SessionScroll } from "./layout-scroll"
@@ -35,7 +36,7 @@ type SessionView = {
   reviewOpen?: string[]
 }
 
-export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean }
+export type LocalProject = Partial<Project> & { worktree: GitWorktree; expanded: boolean }
 
 export type ReviewDiffStyle = "unified" | "split"
 
@@ -242,7 +243,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       return available[Math.floor(Math.random() * available.length)]
     }
 
-    function enrich(project: { worktree: string; expanded: boolean }) {
+    function enrich(project: { worktree: GitWorktree; expanded: boolean }): LocalProject {
       const [childStore] = globalSync.child(project.worktree, { bootstrap: false })
       const projectID = childStore.project
       const metadata = projectID
@@ -256,7 +257,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         local?.icon?.override !== undefined ||
         local?.icon?.color !== undefined
 
-      const base = {
+      const base: LocalProject = {
         ...(metadata ?? {}),
         ...project,
         icon: {
@@ -283,22 +284,22 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     }
 
     const roots = createMemo(() => {
-      const map = new Map<string, string>()
+      const map = new Map<string, GitWorktree>()
       for (const project of globalSync.data.project) {
         const sandboxes = project.sandboxes ?? []
         for (const sandbox of sandboxes) {
-          map.set(sandbox, project.worktree)
+          map.set(sandbox, asGitWorktree(project.worktree))
         }
       }
       return map
     })
 
-    const rootFor = (directory: string) => {
+    const rootFor = (directory: GitWorktree): GitWorktree => {
       const map = roots()
       if (map.size === 0) return directory
 
-      const visited = new Set<string>()
-      const chain = [directory]
+      const visited = new Set<GitWorktree>()
+      const chain: GitWorktree[] = [directory]
 
       while (chain.length) {
         const current = chain[chain.length - 1]
@@ -414,7 +415,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       projects: {
         list,
         open(directory: string) {
-          const root = rootFor(directory)
+          const root = rootFor(asGitWorktree(directory))
           if (server.projects.list().find((x) => x.worktree === root)) return
           globalSync.project.loadSessions(root)
           server.projects.open(root)
