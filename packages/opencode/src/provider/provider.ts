@@ -769,6 +769,7 @@ export namespace Provider {
       const parsed: Info = {
         id: providerID,
         name: provider.name ?? existing?.name ?? providerID,
+        type: provider.type ?? existing?.type,
         env: provider.env ?? existing?.env ?? [],
         options: mergeDeep(existing?.options ?? {}, provider.options ?? {}),
         source: "config",

@@ -10,7 +10,7 @@
   "scripts": {
     "typecheck": "tsgo -b",
     "start": "vite",
-    "dev": "vite",
+    "dev": "BROWSER='Chromium' vite --open",
     "build": "vite build",
     "serve": "vite preview",
     "test": "playwright test",
