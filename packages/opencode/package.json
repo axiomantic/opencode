@@ -107,6 +107,7 @@
     "@hono/standard-validator": "0.1.5",
     "@hono/zod-validator": "catalog:",
     "@lydell/node-pty": "1.2.0-beta.10",
+    "@modelcontextprotocol/core": "github:axiomantic/typescript-sdk#mcp-events",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@npmcli/arborist": "9.4.0",
     "@octokit/graphql": "9.0.2",

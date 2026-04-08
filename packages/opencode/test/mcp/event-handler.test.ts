@@ -104,7 +104,7 @@ beforeEach(() => {
 })
 
 // Import after mocks
-import { EventEmitNotificationSchema, EventSubscribeResultSchema } from "../../src/mcp/event-schemas"
+import { EventEmitNotificationSchema, EventSubscribeResultSchema } from "@modelcontextprotocol/core/packages/core/src/types/schemas.js"
 
 test("EventEmitNotificationSchema validates valid event notification", () => {
   const notification = {
