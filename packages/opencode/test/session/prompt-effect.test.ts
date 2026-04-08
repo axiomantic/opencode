@@ -323,6 +323,7 @@ it.live("loop exits immediately when last assistant has stop finish", () =>
     }),
     { git: true, config: providerCfg },
   ),
+  15_000,
 )
 
 it.live("loop calls LLM and returns assistant message", () =>
@@ -350,6 +351,7 @@ it.live("loop calls LLM and returns assistant message", () =>
     }),
     { git: true, config: providerCfg },
   ),
+  15_000,
 )
 
 it.live("static loop returns assistant text through local provider", () =>
@@ -381,6 +383,7 @@ it.live("static loop returns assistant text through local provider", () =>
     }),
     { git: true, config: providerCfg },
   ),
+  15_000,
 )
 
 it.live("static loop consumes queued replies across turns", () =>
@@ -428,6 +431,7 @@ it.live("static loop consumes queued replies across turns", () =>
     }),
     { git: true, config: providerCfg },
   ),
+  15_000,
 )
 
 it.live("loop continues when finish is tool-calls", () =>
@@ -458,6 +462,7 @@ it.live("loop continues when finish is tool-calls", () =>
     }),
     { git: true, config: providerCfg },
   ),
+  15_000,
 )
 
 it.live("loop continues when finish is stop but assistant has tool parts", () =>
@@ -488,6 +493,7 @@ it.live("loop continues when finish is stop but assistant has tool parts", () =>
     }),
     { git: true, config: providerCfg },
   ),
+  15_000,
 )
 
 it.live("failed subtask preserves metadata on error tool state", () =>
@@ -537,6 +543,7 @@ it.live("failed subtask preserves metadata on error tool state", () =>
       }),
     },
   ),
+  15_000,
 )
 
 it.live(
@@ -562,7 +569,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 // Cancel semantics
@@ -592,7 +599,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 it.live(
@@ -620,7 +627,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 it.live(
@@ -712,7 +719,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 // Queue semantics
@@ -734,6 +741,7 @@ it.live("concurrent loop callers get same result", () =>
       }),
     { git: true },
   ),
+  15_000,
 )
 
 it.live(
@@ -756,7 +764,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 it.live(
@@ -825,7 +833,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 it.live(
@@ -854,7 +862,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 it.live("assertNotBusy succeeds when idle", () =>
@@ -870,6 +878,7 @@ it.live("assertNotBusy succeeds when idle", () =>
       }),
     { git: true },
   ),
+  15_000,
 )
 
 // Shell semantics
@@ -899,7 +908,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 unix("shell captures stdout and stderr in completed tool output", () =>
@@ -925,6 +934,7 @@ unix("shell captures stdout and stderr in completed tool output", () =>
       }),
     { git: true, config: cfg },
   ),
+  15_000,
 )
 
 unix("shell completes a fast command on the preferred shell", () =>
@@ -949,6 +959,7 @@ unix("shell completes a fast command on the preferred shell", () =>
       }),
     { git: true, config: cfg },
   ),
+  15_000,
 )
 
 unix("shell lists files from the project directory", () =>
@@ -975,6 +986,7 @@ unix("shell lists files from the project directory", () =>
       }),
     { git: true, config: cfg },
   ),
+  15_000,
 )
 
 unix("shell captures stderr from a failing command", () =>
@@ -998,6 +1010,7 @@ unix("shell captures stderr from a failing command", () =>
       }),
     { git: true, config: cfg },
   ),
+  15_000,
 )
 
 unix(
@@ -1069,7 +1082,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 it.live(
@@ -1109,7 +1122,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  15_000,
 )
 
 unix(

@@ -17,6 +17,7 @@ import { Flag } from "@/flag/flag"
 import { Permission } from "@/permission"
 import { Auth } from "@/auth"
 import { Installation } from "@/installation"
+import { EventQueue, formatMcpEvents } from "./event-queue"
 
 export namespace LLM {
   const log = Log.create({ service: "llm" })
@@ -35,6 +36,7 @@ export namespace LLM {
     tools: Record<string, Tool>
     retries?: number
     toolChoice?: "auto" | "required" | "none"
+    eventQueue?: EventQueue.Interface
   }
 
   export type StreamRequest = StreamInput & {
@@ -256,6 +258,31 @@ export namespace LLM {
     }
 
     return streamText({
+      prepareStep: input.eventQueue
+        ? ({ messages }) => {
+            // Drain only URGENT events at step boundaries (between tool calls)
+            // CONSTRAINT: EventQueue.drain must remain synchronous (Effect.sync)
+            // because prepareStep is a synchronous callback in the Vercel AI SDK.
+            // If drain becomes async, this will throw at runtime.
+            const urgent = Effect.runSync(
+              input.eventQueue!.drain(input.sessionID, { maxPriority: "urgent" }),
+            )
+            if (urgent.length === 0) return undefined // no modification
+
+            return {
+              messages: [
+                ...messages,
+                {
+                  role: "system" as const,
+                  content: formatMcpEvents(
+                    urgent,
+                    "These urgent events arrived during your current task:",
+                  ),
+                },
+              ],
+            }
+          }
+        : undefined,
       onError(error) {
         l.error("stream error", {
           error,

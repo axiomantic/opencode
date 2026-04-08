@@ -42,6 +42,7 @@ import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
+import { EventQueue, formatMcpEvents } from "./event-queue"
 import { Shell } from "@/shell/shell"
 import { AppFileSystem } from "@/filesystem"
 import { Truncate } from "@/tool/truncate"
@@ -101,6 +102,13 @@ export namespace SessionPrompt {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const scope = yield* Scope.Scope
       const instruction = yield* Instruction.Service
+      const noopEventQueue: EventQueue.Interface = {
+        enqueue: () => Effect.void,
+        drain: () => Effect.succeed([]),
+        pending: () => Effect.succeed(0),
+      }
+      const eventQueueOption = yield* Effect.serviceOption(EventQueue.Service)
+      const eventQueue = Option.isSome(eventQueueOption) ? eventQueueOption.value : noopEventQueue
 
       const state = yield* InstanceState.make(
         Effect.fn("SessionPrompt.state")(function* () {
@@ -1344,11 +1352,67 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let step = 0
           const session = yield* sessions.get(sessionID)
 
+          // Bridge bus events into the per-session EventQueue.
+          // Forked into the service scope so it lives for the prompt loop's lifetime
+          // and is interrupted when the scope closes.
+          yield* bus.subscribe(MCP.McpEvent).pipe(
+            Stream.runForEach((event) =>
+              eventQueue.enqueue(sessionID, {
+                server: event.properties.server,
+                topic: event.properties.topic,
+                payload: event.properties.payload,
+                event_id: event.properties.event_id,
+                retained: event.properties.retained,
+                requested_effects: event.properties.requested_effects,
+                permissions: event.properties.permissions,
+              }),
+            ),
+            Effect.forkIn(scope),
+          )
+
           while (true) {
             yield* status.set(sessionID, { type: "busy" })
             log.info("loop", { step, sessionID })
 
             let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+
+            // Drain MCP events at loop boundary
+            const highEvents = yield* eventQueue.drain(sessionID, { maxPriority: "high" })
+            const normalEvents =
+              step > 0
+                ? yield* eventQueue.drain(sessionID, { maxPriority: "normal" })
+                : []
+            if (highEvents.length > 0 || normalEvents.length > 0) {
+              const allEvents = [...highEvents, ...normalEvents]
+              const content = formatMcpEvents(
+                allEvents,
+                "MCP events received since your last response:",
+              )
+              // Find the most recent user message's model info for the synthetic message.
+              // If no user message exists, skip event injection since we can't construct
+              // a valid User message without model info.
+              const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
+              if (lastUserMsg && lastUserMsg.info.role === "user") {
+                const userInfo = lastUserMsg.info
+                const syntheticUser: MessageV2.User = {
+                  id: MessageID.ascending(),
+                  role: "user",
+                  sessionID,
+                  time: { created: Date.now() },
+                  agent: userInfo.agent,
+                  model: userInfo.model,
+                }
+                const syntheticPart: MessageV2.TextPart = {
+                  id: PartID.ascending(),
+                  messageID: syntheticUser.id,
+                  sessionID,
+                  type: "text",
+                  text: content,
+                  synthetic: true,
+                }
+                msgs.push({ info: syntheticUser, parts: [syntheticPart] })
+              }
+            }
 
             let lastUser: MessageV2.User | undefined
             let lastAssistant: MessageV2.Assistant | undefined
@@ -1521,6 +1585,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   tools,
                   model,
                   toolChoice: format.type === "json_schema" ? "required" : undefined,
+                  eventQueue,
                 })
 
                 if (structured !== undefined) {
@@ -1731,6 +1796,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         Layer.provide(Plugin.defaultLayer),
         Layer.provide(Session.defaultLayer),
         Layer.provide(Agent.defaultLayer),
+        Layer.provide(EventQueue.layer),
         Layer.provide(Bus.layer),
         Layer.provide(CrossSpawnSpawner.defaultLayer),
       ),

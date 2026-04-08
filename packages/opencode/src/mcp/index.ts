@@ -9,6 +9,7 @@ import {
   type Tool as MCPToolDef,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
+import { EventEmitNotificationSchema, EventSubscribeResultSchema } from "./event-schemas"
 import { Config } from "../config/config"
 import { Log } from "../util/log"
 import { NamedError } from "@opencode-ai/util/error"
@@ -30,6 +31,28 @@ import { makeRuntime } from "@/effect/run-service"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
 
+/**
+ * Resolve per-effect permissions for an MCP server config.
+ * When no events config is present, defaults to safe values:
+ *   inject_context=false, notify_user=true, trigger_turn=false
+ */
+export function resolveEventPermissions(mcp: Config.Mcp) {
+  const events = mcp.events
+  return {
+    inject_context: events?.inject_context ?? false,
+    notify_user: events?.notify_user ?? true,
+    trigger_turn: events?.trigger_turn ?? false,
+  }
+}
+
+/**
+ * Convert topic patterns with {param} placeholders to MQTT-style + wildcards
+ * for MCP event subscription.
+ */
+export function convertTopicPatterns(topics: Array<{ pattern: string }>): string[] {
+  return topics.map((t) => t.pattern.replace(/\{[^}]+\}/g, "+"))
+}
+
 export namespace MCP {
   const log = Log.create({ service: "mcp" })
   const DEFAULT_TIMEOUT = 30_000
@@ -49,6 +72,26 @@ export namespace MCP {
     "mcp.tools.changed",
     z.object({
       server: z.string(),
+    }),
+  )
+
+  export const McpEvent = BusEvent.define(
+    "mcp.event",
+    z.object({
+      server: z.string(),
+      topic: z.string(),
+      payload: z.unknown(),
+      event_id: z.string(),
+      retained: z.boolean().optional(),
+      requested_effects: z.array(z.object({
+        type: z.enum(["inject_context", "notify_user", "trigger_turn"]),
+        priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+      })).optional(),
+      permissions: z.object({
+        inject_context: z.boolean(),
+        notify_user: z.boolean(),
+        trigger_turn: z.boolean(),
+      }).optional(),
     }),
   )
 
@@ -463,7 +506,7 @@ export namespace MCP {
         Effect.catch(() => Effect.succeed([] as number[])),
       )
 
-      function watch(s: State, name: string, client: MCPClient, timeout?: number) {
+      function watch(s: State, name: string, client: MCPClient, timeout?: number, eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean }) {
         client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
           log.info("tools list changed notification received", { server: name })
           if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
@@ -475,7 +518,82 @@ export namespace MCP {
           s.defs[name] = listed
           await Effect.runPromise(bus.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
         })
+
+        client.setNotificationHandler(EventEmitNotificationSchema, async (notification) => {
+          const event = notification.params
+          log.info("event received", { server: name, topic: event.topic, event_id: event.event_id })
+          await Effect.runPromise(
+            bus.publish(McpEvent, {
+              server: name,
+              topic: event.topic,
+              payload: event.payload,
+              event_id: event.event_id,
+              retained: event.retained,
+              requested_effects: event.requested_effects,
+              permissions: eventPermissions,
+            }).pipe(Effect.ignore),
+          )
+        })
       }
+
+      const autoSubscribeEvents = Effect.fn("MCP.autoSubscribeEvents")(function* (
+        key: string,
+        client: MCPClient,
+        eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean },
+      ) {
+        yield* Effect.tryPromise({
+          try: async () => {
+            // Check server capabilities for events
+            // SDK compatibility: MCPClient.getServerCapabilities() exists at runtime but
+            // is not exposed in the published type definitions as of @modelcontextprotocol/sdk 1.x.
+            // Cast to any until the SDK exposes this in its public API.
+            const serverCapabilities = (client as any).getServerCapabilities?.() as
+              | { events?: { topics?: Array<{ pattern: string }> } }
+              | undefined
+            const eventsCapability = serverCapabilities?.events
+            if (!eventsCapability?.topics?.length) return
+
+            const topics = eventsCapability.topics as Array<{ pattern: string }>
+            // Convert {param} placeholders to + wildcards for subscription
+            const patterns = convertTopicPatterns(topics)
+
+            // SDK compatibility: EventSubscribeResultSchema is a custom schema not part
+            // of the official MCP SDK types. Cast required because client.request() expects
+            // the SDK's own result schema types. The returned shape is validated by the
+            // zod schema at runtime.
+            const subscribeResult = await client.request(
+              { method: "events/subscribe", params: { topics: patterns } },
+              EventSubscribeResultSchema as any,
+            )
+
+            // Publish retained values as bus events
+            for (const retained of subscribeResult.retained ?? []) {
+              try {
+                await Effect.runPromise(
+                  bus.publish(McpEvent, {
+                    server: key,
+                    topic: retained.topic,
+                    payload: retained.payload,
+                    event_id: retained.event_id,
+                    retained: true,
+                    permissions: eventPermissions,
+                  }).pipe(Effect.ignore),
+                )
+              } catch (e) {
+                log.warn("failed to publish retained event", { topic: retained.topic, error: e })
+              }
+            }
+            log.info("subscribed to events", {
+              server: key,
+              subscribed: (subscribeResult.subscribed ?? []).length,
+            })
+          },
+          catch: (e) => {
+            log.warn("failed to subscribe to events", { server: key, error: String(e) })
+            return e
+          },
+        }).pipe(Effect.ignore)
+      })
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("MCP.state")(function* () {
@@ -508,7 +626,9 @@ export namespace MCP {
                 if (result.mcpClient) {
                   s.clients[key] = result.mcpClient
                   s.defs[key] = result.defs!
-                  watch(s, key, result.mcpClient, mcp.timeout)
+                  const perms = resolveEventPermissions(mcp)
+                  watch(s, key, result.mcpClient, mcp.timeout, perms)
+                  yield* autoSubscribeEvents(key, result.mcpClient, perms)
                 }
               }),
             { concurrency: "unbounded" },
@@ -582,7 +702,9 @@ export namespace MCP {
         yield* closeClient(s, name)
         s.clients[name] = result.mcpClient
         s.defs[name] = result.defs!
-        watch(s, name, result.mcpClient, mcp.timeout)
+        const perms = resolveEventPermissions(mcp)
+        watch(s, name, result.mcpClient, mcp.timeout, perms)
+        yield* autoSubscribeEvents(name, result.mcpClient, perms)
         return result.status
       })
 

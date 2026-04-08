@@ -370,6 +370,12 @@ export namespace Config {
     return list.toReversed()
   }
 
+  const McpEventsPermissions = z.object({
+    inject_context: z.boolean().optional().default(false),
+    notify_user: z.boolean().optional().default(true),
+    trigger_turn: z.boolean().optional().default(false),
+  }).optional()
+
   export const McpLocal = z
     .object({
       type: z.literal("local").describe("Type of MCP server connection"),
@@ -385,6 +391,8 @@ export namespace Config {
         .positive()
         .optional()
         .describe("Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."),
+      events: McpEventsPermissions
+        .describe("Per-effect permissions for MCP events. Controls which event effects this server is allowed to request."),
     })
     .strict()
     .meta({
@@ -424,6 +432,8 @@ export namespace Config {
         .positive()
         .optional()
         .describe("Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."),
+      events: McpEventsPermissions
+        .describe("Per-effect permissions for MCP events. Controls which event effects this server is allowed to request."),
     })
     .strict()
     .meta({
