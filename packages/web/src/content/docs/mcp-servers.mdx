@@ -123,6 +123,7 @@ Here are all the options for configuring a local MCP server.
 | `environment` | Object  |          | Environment variables to set when running the server.                               |
 | `enabled`     | Boolean |          | Enable or disable the MCP server on startup.                                        |
 | `timeout`     | Number  |          | Timeout in ms for fetching tools from the MCP server. Defaults to 5000 (5 seconds). |
+| `events`      | Object  |          | Per-effect permissions for MCP events. See [Events](#events).                       |
 
 ---
 
@@ -160,6 +161,7 @@ The `url` is the URL of the remote MCP server and with the `headers` option you 
 | `headers` | Object  |          | Headers to send with the request.                                                   |
 | `oauth`   | Object  |          | OAuth authentication configuration. See [OAuth](#oauth) section below.              |
 | `timeout` | Number  |          | Timeout in ms for fetching tools from the MCP server. Defaults to 5000 (5 seconds). |
+| `events`  | Object  |          | Per-effect permissions for MCP events. See [Events](#events).                       |
 
 ---
 
@@ -286,6 +288,45 @@ opencode mcp debug my-oauth-server
 ```
 
 The `mcp debug` command shows the current auth status, tests HTTP connectivity, and attempts the OAuth discovery flow.
+
+---
+
+## Events
+
+Some MCP servers can publish events to the client outside the normal request/response cycle, for things like background job status, cross-session messages, or external state changes. When OpenCode connects to a server that declares the `events` capability, it automatically subscribes to all topics the server advertises.
+
+Each event can request one or more **effects** that hint at how OpenCode should handle it. You control which effects each server is allowed to request through the `events` field on its config.
+
+```jsonc title="opencode.jsonc" {7-11}
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "my-mcp-server": {
+      "type": "local",
+      "command": ["bun", "x", "my-mcp-server"],
+      "events": {
+        "inject_context": true,
+        "notify_user": true,
+        "trigger_turn": false
+      }
+    }
+  }
+}
+```
+
+Effects requested by the server are filtered against this permission map before being applied. A `false` value blocks that effect entirely for the server, regardless of what events it emits.
+
+---
+
+#### Effects
+
+| Effect           | Description                                                                                | Default |
+| ---------------- | ------------------------------------------------------------------------------------------ | ------- |
+| `inject_context` | Inject the event payload into the model's context on the next turn.                        | `false` |
+| `notify_user`    | Show a notification to the user (TUI banner, desktop notification, etc).                   | `true`  |
+| `trigger_turn`   | Wake an idle session and start a new model turn to process the event.                      | `false` |
+
+The defaults are conservative: servers can notify the user but cannot inject content into the model or wake a session unless you explicitly opt in. Set `inject_context: true` for servers whose events are safe to feed directly to the model. Set `trigger_turn: true` only for servers you trust to interrupt your work.
 
 ---
 
