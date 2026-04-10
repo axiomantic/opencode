@@ -267,7 +267,7 @@ export function formatMcpEvents(
       }
       if (e.source) attrs.push(`source="${escapeXmlAttr(e.source)}"`)
       if (e.correlation_id) attrs.push(`correlation_id="${escapeXmlAttr(e.correlation_id)}"`)
-      const rawPayload = typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)
+      const rawPayload = typeof e.payload === "string" ? e.payload : (JSON.stringify(e.payload) ?? "")
       const payloadStr = escapeXmlContent(rawPayload)
       return `<mcp:event ${attrs.join(" ")}>\n${payloadStr}\n</mcp:event>`
     })

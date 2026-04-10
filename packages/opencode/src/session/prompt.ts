@@ -1349,7 +1349,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           throw new Error("Impossible")
         })
 
-      const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
+      const runLoopInner = Effect.fn("SessionPrompt.run")(
         function* (sessionID: SessionID) {
           const ctx = yield* InstanceState.context
           let structured: unknown | undefined
@@ -1357,8 +1357,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const session = yield* sessions.get(sessionID)
 
           // Bridge bus events into the per-session EventQueue.
-          // Forked into the service scope so it lives for the prompt loop's lifetime
-          // and is interrupted when the scope closes.
+          // forkScoped ties the subscription fiber to the child scope created by
+          // Effect.scoped in `loop`, which closes when the prompt loop ends.
+          // The original forkIn(scope) used the service-level scope shared across all
+          // prompt() calls, causing fiber accumulation and duplicate event delivery.
           // NOTE: This bridge enqueues ALL MCP events regardless of which MCP servers
           // are connected to this session. In a multi-session environment every session
           // receives every event. Per-session server filtering would require the session
@@ -1379,7 +1381,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 expires_at: event.properties.expires_at,
               }),
             ),
-            Effect.forkIn(scope),
+            Effect.forkScoped,
           )
 
           while (true) {
@@ -1392,7 +1394,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const highEvents = yield* eventQueue.drain(sessionID, { maxPriority: "high" })
             const normalEvents =
               step > 0
-                ? yield* eventQueue.drain(sessionID, { maxPriority: "normal" })
+                ? yield* eventQueue.drain(sessionID, { maxPriority: "low" })
                 : []
             if (highEvents.length > 0 || normalEvents.length > 0) {
               const allEvents = [...highEvents, ...normalEvents]
@@ -1651,6 +1653,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           return yield* lastAssistant(sessionID)
         },
       )
+      const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = (sessionID) =>
+        runLoopInner(sessionID).pipe(Effect.scoped)
 
       const loop: (input: z.infer<typeof LoopInput>) => Effect.Effect<MessageV2.WithParts> = Effect.fn(
         "SessionPrompt.loop",
