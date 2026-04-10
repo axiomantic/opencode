@@ -61,6 +61,7 @@ export namespace EventQueue {
       opts: { maxPriority: "urgent" | "high" | "normal" | "low" },
     ) => Effect.Effect<QueuedEvent[]>
     readonly pending: (sessionID: string) => Effect.Effect<number>
+    readonly clear: (sessionID: string) => Effect.Effect<void>
   }
 
   export class Service extends ServiceMap.Service<Service, Interface>()(
@@ -172,7 +173,13 @@ export namespace EventQueue {
         return Effect.sync(() => getQueue(sessionID).length)
       }
 
-      return Service.of({ enqueue, drain, pending })
+      function clear(sessionID: string) {
+        return Effect.sync(() => {
+          queues.delete(sessionID)
+        })
+      }
+
+      return Service.of({ enqueue, drain, pending, clear })
     }),
   )
 }
@@ -183,6 +190,14 @@ function escapeXmlAttr(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
+}
+
+function escapeXmlContent(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/'/g, "&#39;")
 }
 
 export function formatMcpEvents(
@@ -203,7 +218,8 @@ export function formatMcpEvents(
       }
       if (e.source) attrs.push(`source="${escapeXmlAttr(e.source)}"`)
       if (e.correlation_id) attrs.push(`correlation_id="${escapeXmlAttr(e.correlation_id)}"`)
-      const payloadStr = typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)
+      const rawPayload = typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)
+      const payloadStr = escapeXmlContent(rawPayload)
       return `<mcp:event ${attrs.join(" ")}>\n${payloadStr}\n</mcp:event>`
     })
     .join("\n")

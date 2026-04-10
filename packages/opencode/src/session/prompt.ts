@@ -108,6 +108,7 @@ export namespace SessionPrompt {
         enqueue: () => Effect.void,
         drain: () => Effect.succeed([]),
         pending: () => Effect.succeed(0),
+        clear: () => Effect.void,
       }
       const eventQueueOption = yield* Effect.serviceOption(EventQueue.Service)
       const eventQueue = Option.isSome(eventQueueOption) ? eventQueueOption.value : noopEventQueue
@@ -132,6 +133,7 @@ export namespace SessionPrompt {
           onIdle: Effect.gen(function* () {
             runners.delete(sessionID)
             yield* status.set(sessionID, { type: "idle" })
+            yield* eventQueue.clear(sessionID)
           }),
           onBusy: status.set(sessionID, { type: "busy" }),
           onInterrupt: lastAssistant(sessionID),
@@ -1357,6 +1359,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           // Bridge bus events into the per-session EventQueue.
           // Forked into the service scope so it lives for the prompt loop's lifetime
           // and is interrupted when the scope closes.
+          // NOTE: This bridge enqueues ALL MCP events regardless of which MCP servers
+          // are connected to this session. In a multi-session environment every session
+          // receives every event. Per-session server filtering would require the session
+          // to track its connected MCP server names and is deferred as future work.
           yield* bus.subscribe(MCP.McpEvent).pipe(
             Stream.runForEach((event) =>
               eventQueue.enqueue(sessionID, {

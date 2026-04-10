@@ -738,13 +738,17 @@ export namespace MCP {
 
       const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
         const s = yield* InstanceState.get(state)
-        // Best-effort unsubscribe before closing transport
+        // Best-effort unsubscribe before closing transport.
+        // Use a 3-second timeout so a hung server does not delay disconnect.
         const subs = subscriptions.get(name) ?? []
         if (subs.length > 0 && s.clients[name]) {
           yield* Effect.tryPromise({
-            try: () => s.clients[name]!.request(
-              { method: "events/unsubscribe", params: { topics: subs } },
-              EventUnsubscribeResultSchema as any,
+            try: () => withTimeout(
+              s.clients[name]!.request(
+                { method: "events/unsubscribe", params: { topics: subs } },
+                EventUnsubscribeResultSchema as any,
+              ),
+              3_000,
             ),
             catch: () => undefined,
           }).pipe(Effect.ignore)
