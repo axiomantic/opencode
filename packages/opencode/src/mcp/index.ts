@@ -48,9 +48,19 @@ export function resolveEventPermissions(mcp: Config.Mcp) {
 /**
  * Convert topic patterns with {param} placeholders to MQTT-style + wildcards
  * for MCP event subscription.
+ *
+ * When a sessionId is provided, `{session_id}` placeholders are replaced with
+ * the literal UUID so the server can enforce per-session topic isolation.
+ * Remaining `{param}` placeholders are converted to `+` wildcards as before.
  */
-export function convertTopicPatterns(topics: Array<{ pattern: string }>): string[] {
-  return topics.map((t) => t.pattern.replace(/\{[^}]+\}/g, "+"))
+export function convertTopicPatterns(topics: Array<{ pattern: string }>, sessionId?: string): string[] {
+  return topics.map((t) => {
+    let pattern = t.pattern
+    if (sessionId) {
+      pattern = pattern.replace(/\{session_id\}/g, sessionId)
+    }
+    return pattern.replace(/\{[^}]+\}/g, "+")
+  })
 }
 
 export namespace MCP {
@@ -300,6 +310,10 @@ export namespace MCP {
        * Connect a client via the given transport with resource safety:
        * on failure the transport is closed; on success the caller owns it.
        */
+      // Maps MCP clients to their server-assigned session UUID (from InitializeResult._meta.session_id).
+      // Used to substitute {session_id} in event topic patterns with the real UUID.
+      const sessionIds = new Map<MCPClient, string>()
+
       const connectTransport = (transport: Transport, timeout: number) =>
         Effect.acquireUseRelease(
           Effect.succeed(transport),
@@ -307,6 +321,18 @@ export namespace MCP {
             Effect.tryPromise({
               try: () => {
                 const client = new Client({ name: "opencode", version: Installation.VERSION })
+                // Intercept the initialize request to capture _meta.session_id from the response.
+                // The SDK validates & uses the result but does not expose _meta publicly.
+                if (typeof client.request === "function") {
+                  const origRequest = client.request.bind(client)
+                  ;(client as any).request = async function (req: any, schema: any, opts?: any) {
+                    const result = await origRequest(req, schema, opts)
+                    if (req.method === "initialize" && result?._meta?.session_id) {
+                      sessionIds.set(client, result._meta.session_id as string)
+                    }
+                    return result
+                  }
+                }
                 return withTimeout(client.connect(t), timeout).then(() => client)
               },
               catch: (e) => (e instanceof Error ? e : new Error(String(e))),
@@ -561,8 +587,12 @@ export namespace MCP {
             if (!eventsCapability?.topics?.length) return
 
             const topics = eventsCapability.topics as Array<{ pattern: string }>
-            // Convert {param} placeholders to + wildcards for subscription
-            const patterns = convertTopicPatterns(topics)
+            // Convert {param} placeholders to + wildcards for subscription.
+            // If the server assigned a session_id via InitializeResult._meta,
+            // substitute it into {session_id} slots so the server can enforce
+            // per-session topic isolation.
+            const sessionId = sessionIds.get(client)
+            const patterns = convertTopicPatterns(topics, sessionId)
 
             // SDK compatibility: EventSubscribeResultSchema is a custom schema not part
             // of the official MCP SDK types. Cast required because client.request() expects
@@ -660,6 +690,7 @@ export namespace MCP {
                         } catch {}
                       }
                     }
+                    sessionIds.delete(client)
                     yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
                   }),
                 { concurrency: "unbounded" },
@@ -676,6 +707,7 @@ export namespace MCP {
         const client = s.clients[name]
         delete s.defs[name]
         if (!client) return Effect.void
+        sessionIds.delete(client)
         return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
       }
 

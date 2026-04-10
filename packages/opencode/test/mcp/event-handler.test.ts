@@ -202,6 +202,34 @@ test("{param} to + conversion in subscription patterns", () => {
   ])
 })
 
+test("{session_id} substituted with actual UUID when sessionId provided", () => {
+  const { convertTopicPatterns } = require("../../src/mcp/index")
+  const uuid = "550e8400-e29b-41d4-a716-446655440000"
+  const topics = [
+    { pattern: "spellbook/sessions/{session_id}/messages" },
+    { pattern: "builds/{project_id}/status" },
+    { pattern: "no-params/topic" },
+    { pattern: "{session_id}/logs/{level}" },
+  ]
+  const patterns = convertTopicPatterns(topics, uuid)
+  expect(patterns).toEqual([
+    `spellbook/sessions/${uuid}/messages`,
+    "builds/+/status",
+    "no-params/topic",
+    `${uuid}/logs/+`,
+  ])
+})
+
+test("{session_id} not substituted when sessionId is undefined", () => {
+  const { convertTopicPatterns } = require("../../src/mcp/index")
+  const topics = [
+    { pattern: "spellbook/sessions/{session_id}/messages" },
+  ]
+  // Explicit undefined
+  const patterns = convertTopicPatterns(topics, undefined)
+  expect(patterns).toEqual(["spellbook/sessions/+/messages"])
+})
+
 test("EventEmitNotificationSchema has correct method literal for SDK compat", () => {
   // The MCP SDK's setNotificationHandler extracts the method literal
   // from the schema to register handlers. Verify our schema has the right structure.
@@ -271,6 +299,35 @@ test("default permissions when server has no events config", () => {
     notify_user: true,
     trigger_turn: false,
   })
+})
+
+test("session_id from InitializeResult._meta flows through to subscribe patterns", () => {
+  // This test validates the full chain:
+  // 1. Server declares topics with {session_id} in capabilities
+  // 2. convertTopicPatterns receives the session UUID
+  // 3. Subscribe request contains the literal UUID, not a + wildcard
+  const { convertTopicPatterns } = require("../../src/mcp/index")
+
+  const sessionId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  const serverTopics = [
+    { pattern: "spellbook/sessions/{session_id}/messages" },
+    { pattern: "spellbook/sessions/{session_id}/status" },
+    { pattern: "metrics/{host}/cpu" },
+  ]
+
+  const patterns = convertTopicPatterns(serverTopics, sessionId)
+
+  // {session_id} slots get the real UUID
+  expect(patterns[0]).toBe(`spellbook/sessions/${sessionId}/messages`)
+  expect(patterns[1]).toBe(`spellbook/sessions/${sessionId}/status`)
+  // Other {param} slots still get + wildcard
+  expect(patterns[2]).toBe("metrics/+/cpu")
+
+  // Without session_id, all {param} become +
+  const wildcardPatterns = convertTopicPatterns(serverTopics)
+  expect(wildcardPatterns[0]).toBe("spellbook/sessions/+/messages")
+  expect(wildcardPatterns[1]).toBe("spellbook/sessions/+/status")
+  expect(wildcardPatterns[2]).toBe("metrics/+/cpu")
 })
 
 test("EventEmitNotificationSchema handles all effect types", () => {
