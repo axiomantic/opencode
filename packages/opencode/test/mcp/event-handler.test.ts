@@ -330,6 +330,79 @@ test("session_id from InitializeResult._meta flows through to subscribe patterns
   expect(wildcardPatterns[2]).toBe("metrics/+/cpu")
 })
 
+test("resolveEventPermissions includes topicOverrides when topics config present", () => {
+  const { resolveEventPermissions } = require("../../src/mcp/index")
+  const mcp = {
+    type: "local" as const,
+    command: ["test"],
+    events: {
+      inject_context: false,
+      notify_user: true,
+      trigger_turn: false,
+      topics: {
+        "alerts/#": { inject_context: true, trigger_turn: true },
+        "metrics/+/cpu": { notify_user: false },
+      },
+    },
+  }
+  const perms = resolveEventPermissions(mcp)
+  expect(perms.inject_context).toBe(false)
+  expect(perms.notify_user).toBe(true)
+  expect(perms.trigger_turn).toBe(false)
+  expect(perms.topicOverrides).toBeDefined()
+  expect(perms.topicOverrides!["alerts/#"]).toEqual({ inject_context: true, trigger_turn: true })
+  expect(perms.topicOverrides!["metrics/+/cpu"]).toEqual({ notify_user: false })
+})
+
+test("resolveEventPermissions returns undefined topicOverrides when no topics config", () => {
+  const { resolveEventPermissions } = require("../../src/mcp/index")
+  const mcp = {
+    type: "local" as const,
+    command: ["test"],
+    events: {
+      inject_context: true,
+      notify_user: true,
+      trigger_turn: false,
+    },
+  }
+  const perms = resolveEventPermissions(mcp)
+  expect(perms.topicOverrides).toBeUndefined()
+})
+
+test("convertTopicPatterns: multiple {param} types get + except {session_id}", () => {
+  const { convertTopicPatterns } = require("../../src/mcp/index")
+  const uuid = "abc-123"
+  const topics = [
+    { pattern: "{session_id}/events/{severity}/{project}" },
+  ]
+  const patterns = convertTopicPatterns(topics, uuid)
+  expect(patterns).toEqual([`${uuid}/events/+/+`])
+})
+
+test("convertTopicPatterns: {session_id} appears multiple times", () => {
+  const { convertTopicPatterns } = require("../../src/mcp/index")
+  const uuid = "my-uuid"
+  const topics = [
+    { pattern: "sessions/{session_id}/sub/{session_id}/data" },
+  ]
+  const patterns = convertTopicPatterns(topics, uuid)
+  expect(patterns).toEqual([`sessions/${uuid}/sub/${uuid}/data`])
+})
+
+test("mqttTopicMatch used for subscription defense-in-depth", () => {
+  // Verify the mqttTopicMatch function is importable from event-queue
+  const { mqttTopicMatch } = require("../../src/session/event-queue")
+  // Simulates the defense-in-depth check in the notification handler
+  const activeSubs = ["spellbook/sessions/abc/+", "metrics/#"]
+
+  // Should match
+  expect(activeSubs.some((p: string) => mqttTopicMatch(p, "spellbook/sessions/abc/messages"))).toBe(true)
+  expect(activeSubs.some((p: string) => mqttTopicMatch(p, "metrics/cpu/load"))).toBe(true)
+
+  // Should NOT match - unsubscribed topic
+  expect(activeSubs.some((p: string) => mqttTopicMatch(p, "other/topic"))).toBe(false)
+})
+
 test("EventEmitNotificationSchema handles all effect types", () => {
   const notification = {
     method: "events/emit",

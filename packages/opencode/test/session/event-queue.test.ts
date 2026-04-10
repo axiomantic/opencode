@@ -1,6 +1,6 @@
 import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { Effect, Layer } from "effect"
-import { EventQueue, formatMcpEvents } from "../../src/session/event-queue"
+import { EventQueue, formatMcpEvents, mqttTopicMatch, resolvePermissionsForTopic } from "../../src/session/event-queue"
 import { Bus } from "../../src/bus"
 
 // Minimal Bus stub layer for testing
@@ -577,4 +577,185 @@ test("clear only removes the target session", async () => {
       expect(yield* eq.pending(SESSION_B)).toBe(1)
     }),
   )
+})
+
+// --- MQTT topic matching tests (Gap 5 defense-in-depth) ---
+
+test("mqttTopicMatch: exact match", () => {
+  expect(mqttTopicMatch("a/b/c", "a/b/c")).toBe(true)
+  expect(mqttTopicMatch("a/b/c", "a/b/d")).toBe(false)
+})
+
+test("mqttTopicMatch: + matches one segment", () => {
+  expect(mqttTopicMatch("a/+/c", "a/b/c")).toBe(true)
+  expect(mqttTopicMatch("a/+/c", "a/x/c")).toBe(true)
+  expect(mqttTopicMatch("a/+/c", "a/b/d")).toBe(false)
+  expect(mqttTopicMatch("+/b/c", "x/b/c")).toBe(true)
+})
+
+test("mqttTopicMatch: + does not match multiple segments", () => {
+  expect(mqttTopicMatch("a/+/c", "a/b/x/c")).toBe(false)
+})
+
+test("mqttTopicMatch: # matches rest of topic", () => {
+  expect(mqttTopicMatch("a/#", "a/b/c")).toBe(true)
+  expect(mqttTopicMatch("a/#", "a")).toBe(true)
+  expect(mqttTopicMatch("a/#", "a/b")).toBe(true)
+  expect(mqttTopicMatch("#", "anything/at/all")).toBe(true)
+})
+
+test("mqttTopicMatch: pattern longer than topic fails", () => {
+  expect(mqttTopicMatch("a/b/c/d", "a/b/c")).toBe(false)
+})
+
+test("mqttTopicMatch: topic longer than pattern fails", () => {
+  expect(mqttTopicMatch("a/b", "a/b/c")).toBe(false)
+})
+
+// --- Per-topic permission override tests (Gap 2) ---
+
+test("resolvePermissionsForTopic: returns server defaults when no overrides", () => {
+  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
+  const result = resolvePermissionsForTopic(serverPerms, "some/topic")
+  expect(result).toEqual(serverPerms)
+})
+
+test("resolvePermissionsForTopic: returns server defaults when overrides is undefined", () => {
+  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
+  const result = resolvePermissionsForTopic(serverPerms, "some/topic", undefined)
+  expect(result).toEqual(serverPerms)
+})
+
+test("resolvePermissionsForTopic: topic override merges on top of server defaults", () => {
+  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
+  const overrides = {
+    "alerts/#": { inject_context: true, trigger_turn: true },
+  }
+  const result = resolvePermissionsForTopic(serverPerms, "alerts/critical/fire", overrides)
+  expect(result).toEqual({ inject_context: true, notify_user: true, trigger_turn: true })
+})
+
+test("resolvePermissionsForTopic: non-matching topic uses server defaults", () => {
+  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
+  const overrides = {
+    "alerts/#": { inject_context: true },
+  }
+  const result = resolvePermissionsForTopic(serverPerms, "metrics/cpu", overrides)
+  expect(result).toEqual(serverPerms)
+})
+
+test("resolvePermissionsForTopic: partial override only changes specified fields", () => {
+  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
+  const overrides = {
+    "urgent/+/alert": { trigger_turn: true },
+  }
+  const result = resolvePermissionsForTopic(serverPerms, "urgent/fire/alert", overrides)
+  expect(result).toEqual({ inject_context: false, notify_user: true, trigger_turn: true })
+})
+
+test("per-topic override allows inject_context for matching topic in enqueue", async () => {
+  await runTest(
+    Effect.gen(function* () {
+      const eq = yield* EventQueue.Service
+      const event = makeEvent({
+        event_id: "evt-topic-override",
+        topic: "alerts/critical",
+        requested_effects: [{ type: "inject_context", priority: "high" }],
+      })
+      yield* eq.enqueue(SESSION_A, {
+        ...event,
+        // Server-level: inject_context=false
+        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
+        // Per-topic override for alerts/*: inject_context=true
+        topicOverrides: { "alerts/+": { inject_context: true } },
+      })
+
+      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
+      expect(drained).toHaveLength(1)
+      expect(drained[0].event_id).toBe("evt-topic-override")
+    }),
+  )
+})
+
+test("per-topic override does not apply to non-matching topics", async () => {
+  await runTest(
+    Effect.gen(function* () {
+      const eq = yield* EventQueue.Service
+      const event = makeEvent({
+        event_id: "evt-no-match",
+        topic: "metrics/cpu",
+        requested_effects: [{ type: "inject_context", priority: "high" }],
+      })
+      yield* eq.enqueue(SESSION_A, {
+        ...event,
+        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
+        topicOverrides: { "alerts/+": { inject_context: true } },
+      })
+
+      // inject_context is false at server level, topic doesn't match override
+      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
+      expect(drained).toHaveLength(0)
+    }),
+  )
+})
+
+// --- server_trust wiring test (Gap 11) ---
+
+test("formatMcpEvents trust callback: configured vs trusted vs unknown", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: "server-with-events",
+      topic: "test/1",
+      payload: "a",
+      event_id: "evt-a",
+      priority: "normal",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+    },
+    {
+      server: "server-no-events",
+      topic: "test/2",
+      payload: "b",
+      event_id: "evt-b",
+      priority: "normal",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+    },
+    {
+      server: "unknown-server",
+      topic: "test/3",
+      payload: "c",
+      event_id: "evt-c",
+      priority: "normal",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+    },
+  ]
+
+  // Simulate the trust derivation logic from prompt.ts
+  const mcpConfig: Record<string, any> = {
+    "server-with-events": { type: "local", command: ["test"], events: { inject_context: true } },
+    "server-no-events": { type: "local", command: ["test"] },
+  }
+
+  const result = formatMcpEvents(events, undefined, (serverName) => {
+    const cfg = mcpConfig[serverName]
+    if (!cfg || typeof cfg !== "object" || !("type" in cfg)) return "unknown"
+    if (cfg.events) return "configured"
+    return "trusted"
+  })
+
+  expect(result).toContain('server="server-with-events"')
+  expect(result).toContain('trust="configured"')
+  expect(result).toContain('trust="trusted"')
+  expect(result).toContain('trust="unknown"')
+
+  // Verify each server gets the right trust value
+  const lines = result.split("\n")
+  const eventLine1 = lines.find((l) => l.includes("server-with-events"))!
+  const eventLine2 = lines.find((l) => l.includes("server-no-events"))!
+  const eventLine3 = lines.find((l) => l.includes("unknown-server"))!
+  expect(eventLine1).toContain('trust="configured"')
+  expect(eventLine2).toContain('trust="trusted"')
+  expect(eventLine3).toContain('trust="unknown"')
 })

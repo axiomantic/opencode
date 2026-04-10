@@ -269,6 +269,7 @@ export namespace LLM {
             )
             if (urgent.length === 0) return undefined // no modification
 
+            const mcpConfig = cfg.mcp ?? {}
             return {
               messages: [
                 ...messages,
@@ -277,6 +278,12 @@ export namespace LLM {
                   content: formatMcpEvents(
                     urgent,
                     "These urgent events arrived during your current task:",
+                    (serverName) => {
+                      const serverCfg = mcpConfig[serverName]
+                      if (!serverCfg || typeof serverCfg !== "object" || !("type" in serverCfg)) return "unknown"
+                      if ((serverCfg as any).events) return "configured"
+                      return "trusted"
+                    },
                   ),
                 },
               ],

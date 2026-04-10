@@ -370,10 +370,17 @@ export namespace Config {
     return list.toReversed()
   }
 
+  const McpEventsTopicOverride = z.object({
+    inject_context: z.boolean().optional(),
+    notify_user: z.boolean().optional(),
+    trigger_turn: z.boolean().optional(),
+  })
+
   const McpEventsPermissions = z.object({
     inject_context: z.boolean().optional().default(false),
     notify_user: z.boolean().optional().default(true),
     trigger_turn: z.boolean().optional().default(false),
+    topics: z.record(z.string(), McpEventsTopicOverride).optional(),
   }).optional()
 
   export const McpLocal = z

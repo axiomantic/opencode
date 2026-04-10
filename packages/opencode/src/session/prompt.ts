@@ -1373,6 +1373,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 retained: event.properties.retained,
                 requested_effects: event.properties.requested_effects,
                 permissions: event.properties.permissions,
+                topicOverrides: event.properties.topicOverrides,
                 source: event.properties.source,
                 correlation_id: event.properties.correlation_id,
                 expires_at: event.properties.expires_at,

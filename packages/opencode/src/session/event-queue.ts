@@ -1,6 +1,48 @@
 import { Effect, Layer, ServiceMap } from "effect"
 import { Bus } from "@/bus"
 
+/**
+ * Match a concrete MQTT topic against a pattern with wildcards.
+ * `+` matches exactly one segment, `#` matches the rest of the topic.
+ */
+export function mqttTopicMatch(pattern: string, topic: string): boolean {
+  const patParts = pattern.split("/")
+  const topParts = topic.split("/")
+
+  for (let i = 0; i < patParts.length; i++) {
+    const p = patParts[i]
+    if (p === "#") return true // matches everything from here
+    if (i >= topParts.length) return false
+    if (p !== "+" && p !== topParts[i]) return false
+  }
+  return patParts.length === topParts.length
+}
+
+/**
+ * Resolve per-effect permissions for an event, merging per-topic overrides
+ * on top of server-level defaults.
+ */
+export function resolvePermissionsForTopic(
+  serverPerms: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean },
+  topic: string,
+  topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>,
+): { inject_context: boolean; notify_user: boolean; trigger_turn: boolean } {
+  if (!topicOverrides) return serverPerms
+
+  // Find the first matching topic pattern
+  for (const [pattern, overrides] of Object.entries(topicOverrides)) {
+    if (mqttTopicMatch(pattern, topic)) {
+      return {
+        inject_context: overrides.inject_context ?? serverPerms.inject_context,
+        notify_user: overrides.notify_user ?? serverPerms.notify_user,
+        trigger_turn: overrides.trigger_turn ?? serverPerms.trigger_turn,
+      }
+    }
+  }
+
+  return serverPerms
+}
+
 export namespace EventQueue {
   export interface QueuedEvent {
     server: string
@@ -50,6 +92,7 @@ export namespace EventQueue {
           notify_user: boolean
           trigger_turn: boolean
         }
+        topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>
         source?: string
         correlation_id?: string
         expires_at?: string
@@ -96,6 +139,7 @@ export namespace EventQueue {
             notify_user: boolean
             trigger_turn: boolean
           }
+          topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>
           source?: string
           correlation_id?: string
           expires_at?: string
@@ -103,10 +147,15 @@ export namespace EventQueue {
         priority?: string,
       ) {
         return Effect.sync(() => {
-          // Filter requested_effects by server permissions
+          // Resolve effective permissions: per-topic overrides merged on top of server defaults
+          const effectivePermissions = event.permissions
+            ? resolvePermissionsForTopic(event.permissions, event.topic, event.topicOverrides)
+            : undefined
+
+          // Filter requested_effects by effective permissions
           const allowedEffects = event.requested_effects?.filter((effect) => {
-            if (!event.permissions) return true // no permissions = allow all (backward compat)
-            return event.permissions[effect.type] === true
+            if (!effectivePermissions) return true // no permissions = allow all (backward compat)
+            return effectivePermissions[effect.type] === true
           }) ?? []
 
           // If event requested effects but all were filtered out, skip enqueue

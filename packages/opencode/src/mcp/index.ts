@@ -35,6 +35,8 @@ import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
  * Resolve per-effect permissions for an MCP server config.
  * When no events config is present, defaults to safe values:
  *   inject_context=false, notify_user=true, trigger_turn=false
+ *
+ * Returns both server-level defaults and optional per-topic overrides.
  */
 export function resolveEventPermissions(mcp: Config.Mcp) {
   const events = mcp.events
@@ -42,6 +44,7 @@ export function resolveEventPermissions(mcp: Config.Mcp) {
     inject_context: events?.inject_context ?? false,
     notify_user: events?.notify_user ?? true,
     trigger_turn: events?.trigger_turn ?? false,
+    topicOverrides: events?.topics,
   }
 }
 
@@ -102,6 +105,11 @@ export namespace MCP {
         notify_user: z.boolean(),
         trigger_turn: z.boolean(),
       }).optional(),
+      topicOverrides: z.record(z.string(), z.object({
+        inject_context: z.boolean().optional(),
+        notify_user: z.boolean().optional(),
+        trigger_turn: z.boolean().optional(),
+      })).optional(),
       source: z.string().optional(),
       correlation_id: z.string().optional(),
       expires_at: z.string().optional(),
@@ -536,7 +544,7 @@ export namespace MCP {
         Effect.catch(() => Effect.succeed([] as number[])),
       )
 
-      function watch(s: State, name: string, client: MCPClient, timeout?: number, eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean }) {
+      function watch(s: State, name: string, client: MCPClient, timeout?: number, eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean; topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }> }) {
         client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
           log.info("tools list changed notification received", { server: name })
           if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
@@ -552,6 +560,18 @@ export namespace MCP {
         client.setNotificationHandler(EventEmitNotificationSchema, async (notification) => {
           const event = notification.params
           log.info("event received", { server: name, topic: event.topic, event_id: event.event_id })
+
+          // Defense-in-depth: drop events for topics the client did not subscribe to (Gap 5)
+          const activeSubs = subscriptions.get(name) ?? []
+          if (activeSubs.length > 0) {
+            const { mqttTopicMatch } = await import("@/session/event-queue")
+            const matchesAnySub = activeSubs.some((pattern) => mqttTopicMatch(pattern, event.topic))
+            if (!matchesAnySub) {
+              log.warn("dropping event for unsubscribed topic", { server: name, topic: event.topic })
+              return
+            }
+          }
+
           await Effect.runPromise(
             bus.publish(McpEvent, {
               server: name,
@@ -560,7 +580,12 @@ export namespace MCP {
               event_id: event.event_id,
               retained: event.retained,
               requested_effects: event.requested_effects,
-              permissions: eventPermissions,
+              permissions: eventPermissions ? {
+                inject_context: eventPermissions.inject_context,
+                notify_user: eventPermissions.notify_user,
+                trigger_turn: eventPermissions.trigger_turn,
+              } : undefined,
+              topicOverrides: eventPermissions?.topicOverrides,
               source: event.source,
               correlation_id: event.correlation_id,
               expires_at: event.expires_at,
@@ -572,7 +597,7 @@ export namespace MCP {
       const autoSubscribeEvents = Effect.fn("MCP.autoSubscribeEvents")(function* (
         key: string,
         client: MCPClient,
-        eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean },
+        eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean; topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }> },
       ) {
         yield* Effect.tryPromise({
           try: async () => {
@@ -613,7 +638,12 @@ export namespace MCP {
                     payload: retained.payload,
                     event_id: retained.event_id,
                     retained: true,
-                    permissions: eventPermissions,
+                    permissions: eventPermissions ? {
+                      inject_context: eventPermissions.inject_context,
+                      notify_user: eventPermissions.notify_user,
+                      trigger_turn: eventPermissions.trigger_turn,
+                    } : undefined,
+                    topicOverrides: eventPermissions?.topicOverrides,
                     source: retained.source,
                     correlation_id: retained.correlation_id,
                     expires_at: retained.expires_at,
