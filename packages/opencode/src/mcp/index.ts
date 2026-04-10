@@ -9,7 +9,7 @@ import {
   type Tool as MCPToolDef,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
-import { EventEmitNotificationSchema, EventSubscribeResultSchema } from "@modelcontextprotocol/core/packages/core/src/types/schemas.js"
+import { EventEmitNotificationSchema, EventSubscribeResultSchema, EventUnsubscribeResultSchema } from "@modelcontextprotocol/core/packages/core/src/types/schemas.js"
 import { Config } from "../config/config"
 import { Log } from "../util/log"
 import { NamedError } from "@opencode-ai/util/error"
@@ -92,6 +92,9 @@ export namespace MCP {
         notify_user: z.boolean(),
         trigger_turn: z.boolean(),
       }).optional(),
+      source: z.string().optional(),
+      correlation_id: z.string().optional(),
+      expires_at: z.string().optional(),
     }),
   )
 
@@ -478,6 +481,7 @@ export namespace MCP {
         log.info("create() successfully created client", { key, toolCount: listed.length })
         return { mcpClient, status, defs: listed } satisfies CreateResult
       })
+      const subscriptions = new Map<string, string[]>()
       const cfgSvc = yield* Config.Service
 
       const descendants = Effect.fnUntraced(
@@ -531,6 +535,9 @@ export namespace MCP {
               retained: event.retained,
               requested_effects: event.requested_effects,
               permissions: eventPermissions,
+              source: event.source,
+              correlation_id: event.correlation_id,
+              expires_at: event.expires_at,
             }).pipe(Effect.ignore),
           )
         })
@@ -577,12 +584,16 @@ export namespace MCP {
                     event_id: retained.event_id,
                     retained: true,
                     permissions: eventPermissions,
+                    source: retained.source,
+                    correlation_id: retained.correlation_id,
+                    expires_at: retained.expires_at,
                   }).pipe(Effect.ignore),
                 )
               } catch (e) {
                 log.warn("failed to publish retained event", { topic: retained.topic, error: e })
               }
             }
+            subscriptions.set(key, (subscribeResult.subscribed ?? []).map((s: { pattern: string }) => s.pattern))
             log.info("subscribed to events", {
               server: key,
               subscribed: (subscribeResult.subscribed ?? []).length,
@@ -694,11 +705,13 @@ export namespace MCP {
 
         s.status[name] = result.status
         if (!result.mcpClient) {
+          subscriptions.delete(name)
           yield* closeClient(s, name)
           delete s.clients[name]
           return result.status
         }
 
+        subscriptions.delete(name)
         yield* closeClient(s, name)
         s.clients[name] = result.mcpClient
         s.defs[name] = result.defs!
@@ -725,6 +738,18 @@ export namespace MCP {
 
       const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
         const s = yield* InstanceState.get(state)
+        // Best-effort unsubscribe before closing transport
+        const subs = subscriptions.get(name) ?? []
+        if (subs.length > 0 && s.clients[name]) {
+          yield* Effect.tryPromise({
+            try: () => s.clients[name]!.request(
+              { method: "events/unsubscribe", params: { topics: subs } },
+              EventUnsubscribeResultSchema as any,
+            ),
+            catch: () => undefined,
+          }).pipe(Effect.ignore)
+        }
+        subscriptions.delete(name)
         yield* closeClient(s, name)
         delete s.clients[name]
         s.status[name] = { status: "disabled" }

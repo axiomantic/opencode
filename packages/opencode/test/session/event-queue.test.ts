@@ -436,7 +436,7 @@ test("formatMcpEvents produces correct XML-like output", () => {
   const result = formatMcpEvents(events, "New events:")
   const expected =
     `New events:\n\n` +
-    `<mcp:event source="spellbook" topic="sessions/abc/messages" priority="high" event_id="evt-1">\n` +
+    `<mcp:event server="spellbook" topic="sessions/abc/messages" priority="high" event_id="evt-1">\n` +
     `{"text":"hello"}\n` +
     `</mcp:event>`
   expect(result).toBe(expected)
@@ -456,8 +456,61 @@ test("formatMcpEvents with string payload and no header", () => {
   ]
   const result = formatMcpEvents(events)
   const expected =
-    `<mcp:event source="test" topic="test/topic" priority="normal" event_id="evt-2">\n` +
+    `<mcp:event server="test" topic="test/topic" priority="normal" event_id="evt-2">\n` +
     `plain text payload\n` +
     `</mcp:event>`
   expect(result).toBe(expected)
+})
+
+test("formatMcpEvents includes trust when getServerTrust provided", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: "spellbook",
+      topic: "test/topic",
+      payload: { ok: true },
+      event_id: "evt-3",
+      priority: "normal",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+    },
+  ]
+  const result = formatMcpEvents(events, undefined, () => "configured")
+  expect(result).toContain('trust="configured"')
+  expect(result).toContain('server="spellbook"')
+})
+
+test("formatMcpEvents includes source and correlation_id when present", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: "test-server",
+      topic: "test/topic",
+      payload: "data",
+      event_id: "evt-4",
+      priority: "normal",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+      source: "upstream-plugin",
+      correlation_id: "corr-abc",
+    },
+  ]
+  const result = formatMcpEvents(events)
+  expect(result).toContain('source="upstream-plugin"')
+  expect(result).toContain('correlation_id="corr-abc"')
+})
+
+test("formatMcpEvents omits source and correlation_id when absent", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: "test-server",
+      topic: "test/topic",
+      payload: "data",
+      event_id: "evt-5",
+      priority: "normal",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+    },
+  ]
+  const result = formatMcpEvents(events)
+  expect(result).not.toContain("source=")
+  expect(result).not.toContain("correlation_id=")
 })

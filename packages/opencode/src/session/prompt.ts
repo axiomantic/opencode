@@ -22,6 +22,7 @@ import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { ToolRegistry } from "../tool/registry"
 import { Runner } from "@/effect/runner"
+import { Config } from "../config/config"
 import { MCP } from "../mcp"
 import { LSP } from "../lsp"
 import { ReadTool } from "../tool/read"
@@ -84,6 +85,7 @@ export namespace SessionPrompt {
     Service,
     Effect.gen(function* () {
       const bus = yield* Bus.Service
+      const cfgSvc = yield* Config.Service
       const status = yield* SessionStatus.Service
       const sessions = yield* Session.Service
       const agents = yield* Agent.Service
@@ -1365,6 +1367,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 retained: event.properties.retained,
                 requested_effects: event.properties.requested_effects,
                 permissions: event.properties.permissions,
+                source: event.properties.source,
+                correlation_id: event.properties.correlation_id,
+                expires_at: event.properties.expires_at,
               }),
             ),
             Effect.forkIn(scope),
@@ -1384,9 +1389,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 : []
             if (highEvents.length > 0 || normalEvents.length > 0) {
               const allEvents = [...highEvents, ...normalEvents]
+              const mcpConfig = (yield* cfgSvc.get()).mcp ?? {}
               const content = formatMcpEvents(
                 allEvents,
                 "MCP events received since your last response:",
+                (serverName) => {
+                  const cfg = mcpConfig[serverName]
+                  if (!cfg || typeof cfg !== "object" || !("type" in cfg)) return "unknown"
+                  if ((cfg as any).events) return "configured"
+                  return "trusted"
+                },
               )
               // Find the most recent user message's model info for the synthetic message.
               // If no user message exists, skip event injection since we can't construct
@@ -1797,6 +1809,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         Layer.provide(Session.defaultLayer),
         Layer.provide(Agent.defaultLayer),
         Layer.provide(EventQueue.layer),
+        Layer.provide(Config.defaultLayer),
         Layer.provide(Bus.layer),
         Layer.provide(CrossSpawnSpawner.defaultLayer),
       ),

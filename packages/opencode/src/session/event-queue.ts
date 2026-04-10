@@ -15,6 +15,9 @@ export namespace EventQueue {
       type: "inject_context" | "notify_user" | "trigger_turn"
       priority?: "low" | "normal" | "high" | "urgent"
     }>
+    source?: string
+    correlation_id?: string
+    expires_at?: string
   }
 
   // Default TTLs by priority
@@ -47,6 +50,9 @@ export namespace EventQueue {
           notify_user: boolean
           trigger_turn: boolean
         }
+        source?: string
+        correlation_id?: string
+        expires_at?: string
       },
       priority?: string,
     ) => Effect.Effect<void>
@@ -89,6 +95,9 @@ export namespace EventQueue {
             notify_user: boolean
             trigger_turn: boolean
           }
+          source?: string
+          correlation_id?: string
+          expires_at?: string
         },
         priority?: string,
       ) {
@@ -121,6 +130,9 @@ export namespace EventQueue {
             event_id: event.event_id,
             retained: event.retained,
             requested_effects: filteredEffects,
+            source: event.source,
+            correlation_id: event.correlation_id,
+            expires_at: event.expires_at,
             priority: p,
             received_at: Date.now(),
             ttl_ms: TTL_DEFAULTS[p] ?? TTL_DEFAULTS.normal,
@@ -176,15 +188,24 @@ function escapeXmlAttr(s: string): string {
 export function formatMcpEvents(
   events: EventQueue.QueuedEvent[],
   header?: string,
+  getServerTrust?: (serverName: string) => string,
 ): string {
   const body = events
-    .map(
-      (e) =>
-        `<mcp:event source="${escapeXmlAttr(e.server)}" topic="${escapeXmlAttr(e.topic)}" ` +
-        `priority="${escapeXmlAttr(e.priority)}" event_id="${escapeXmlAttr(e.event_id)}">` +
-        `\n${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}` +
-        `\n</mcp:event>`,
-    )
+    .map((e) => {
+      const attrs = [
+        `server="${escapeXmlAttr(e.server)}"`,
+        `topic="${escapeXmlAttr(e.topic)}"`,
+        `priority="${escapeXmlAttr(e.priority)}"`,
+        `event_id="${escapeXmlAttr(e.event_id)}"`,
+      ]
+      if (getServerTrust) {
+        attrs.push(`trust="${escapeXmlAttr(getServerTrust(e.server))}"`)
+      }
+      if (e.source) attrs.push(`source="${escapeXmlAttr(e.source)}"`)
+      if (e.correlation_id) attrs.push(`correlation_id="${escapeXmlAttr(e.correlation_id)}"`)
+      const payloadStr = typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)
+      return `<mcp:event ${attrs.join(" ")}>\n${payloadStr}\n</mcp:event>`
+    })
     .join("\n")
   return header ? `${header}\n\n${body}` : body
 }
