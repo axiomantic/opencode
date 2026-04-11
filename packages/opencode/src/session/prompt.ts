@@ -492,10 +492,30 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
           const transformed = ProviderTransform.schema(input.model, schema)
           item.inputSchema = jsonSchema(transformed)
+          // MCP Events v2: tools that declare an `agent_id` parameter expect it
+          // to be resolved client-side to the current opencode session ID. The
+          // LLM does not know its own session ID, so we inject it here at call
+          // time if the caller did not supply one. This keeps event routing
+          // correct for spellbook messaging tools and any other server whose
+          // schema opts into per-agent scoping.
+          const acceptsAgentId =
+            typeof schema === "object" &&
+            schema !== null &&
+            typeof (schema as any).properties === "object" &&
+            (schema as any).properties !== null &&
+            "agent_id" in (schema as any).properties
           item.execute = (args, opts) =>
             Effect.runPromise(
               Effect.gen(function* () {
                 const ctx = context(args, opts)
+                if (
+                  acceptsAgentId &&
+                  typeof args === "object" &&
+                  args !== null &&
+                  (args as Record<string, unknown>).agent_id === undefined
+                ) {
+                  ;(args as Record<string, unknown>).agent_id = ctx.sessionID
+                }
                 yield* plugin.trigger(
                   "tool.execute.before",
                   { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
