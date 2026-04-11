@@ -103,330 +103,155 @@ beforeEach(() => {
   registeredHandlers.length = 0
 })
 
-// Import after mocks
-import { EventEmitNotificationSchema, EventSubscribeResultSchema } from "@modelcontextprotocol/core/packages/core/src/types/schemas.js"
-
-test("EventEmitNotificationSchema validates valid event notification", () => {
-  const notification = {
-    method: "events/emit",
-    params: {
-      topic: "spellbook/sessions/abc/messages",
-      event_id: "evt-123",
-      payload: { text: "hello from session B" },
-      retained: false,
-      requested_effects: [
-        { type: "inject_context", priority: "high" },
-      ],
-    },
-  }
-
-  const result = EventEmitNotificationSchema.safeParse(notification)
-  expect(result.success).toBe(true)
-  if (result.success) {
-    expect(result.data.method).toBe("events/emit")
-    expect(result.data.params.topic).toBe("spellbook/sessions/abc/messages")
-    expect(result.data.params.event_id).toBe("evt-123")
-    expect(result.data.params.payload).toEqual({ text: "hello from session B" })
-  }
-})
-
-test("EventEmitNotificationSchema rejects invalid method", () => {
-  const notification = {
-    method: "wrong/method",
-    params: {
-      topic: "test",
-      event_id: "evt-1",
-      payload: null,
-    },
-  }
-  const result = EventEmitNotificationSchema.safeParse(notification)
-  expect(result.success).toBe(false)
-})
-
-test("EventEmitNotificationSchema requires topic and event_id", () => {
-  const notification = {
-    method: "events/emit",
-    params: {
-      payload: "test",
-    },
-  }
-  const result = EventEmitNotificationSchema.safeParse(notification)
-  expect(result.success).toBe(false)
-})
-
-test("EventSubscribeResultSchema validates subscribe response", () => {
-  const response = {
-    subscribed: [{ pattern: "spellbook/sessions/+/messages" }],
-    rejected: [],
-    retained: [
-      {
-        topic: "spellbook/sessions/abc/status",
-        event_id: "ret-1",
-        payload: { status: "active" },
-      },
-    ],
-  }
-  const result = EventSubscribeResultSchema.safeParse(response)
-  expect(result.success).toBe(true)
-  if (result.success) {
-    expect(result.data.subscribed).toHaveLength(1)
-    expect(result.data.retained).toHaveLength(1)
-    expect(result.data.retained![0].topic).toBe("spellbook/sessions/abc/status")
-  }
-})
-
-test("EventSubscribeResultSchema defaults retained and rejected to empty arrays", () => {
-  const response = {
-    subscribed: [{ pattern: "test/+" }],
-  }
-  const result = EventSubscribeResultSchema.safeParse(response)
-  expect(result.success).toBe(true)
-  if (result.success) {
-    expect(result.data.rejected).toEqual([])
-    expect(result.data.retained).toEqual([])
-  }
-})
-
-test("{param} to + conversion in subscription patterns", () => {
+test("convertTopicPatterns substitutes {agent_id} with literal id and + for others", () => {
   const { convertTopicPatterns } = require("../../src/mcp/index")
+  const agentId = "ses_abc123"
   const topics = [
-    { pattern: "spellbook/sessions/{session_id}/messages" },
+    { pattern: "agents/{agent_id}/messages" },
     { pattern: "builds/{project_id}/status" },
     { pattern: "no-params/topic" },
+    { pattern: "{agent_id}/logs/{level}" },
+  ]
+  const patterns = convertTopicPatterns(topics, agentId)
+  expect(patterns).toEqual([
+    `agents/${agentId}/messages`,
+    "builds/+/status",
+    "no-params/topic",
+    `${agentId}/logs/+`,
+  ])
+})
+
+test("convertTopicPatterns: backward-compat {session_id} still treated as agent_id", () => {
+  const { convertTopicPatterns } = require("../../src/mcp/index")
+  const agentId = "my-agent"
+  const topics = [{ pattern: "spellbook/sessions/{session_id}/messages" }]
+  const patterns = convertTopicPatterns(topics, agentId)
+  expect(patterns).toEqual([`spellbook/sessions/${agentId}/messages`])
+})
+
+test("convertTopicPatterns without agentId: all placeholders become +", () => {
+  const { convertTopicPatterns } = require("../../src/mcp/index")
+  const topics = [
+    { pattern: "agents/{agent_id}/messages" },
+    { pattern: "builds/{project_id}/status" },
   ]
   const patterns = convertTopicPatterns(topics)
-  expect(patterns).toEqual([
-    "spellbook/sessions/+/messages",
-    "builds/+/status",
-    "no-params/topic",
-  ])
+  expect(patterns).toEqual(["agents/+/messages", "builds/+/status"])
 })
 
-test("{session_id} substituted with actual UUID when sessionId provided", () => {
+test("convertTopicPatterns: multiple {param} types get + except {agent_id}", () => {
   const { convertTopicPatterns } = require("../../src/mcp/index")
-  const uuid = "550e8400-e29b-41d4-a716-446655440000"
-  const topics = [
-    { pattern: "spellbook/sessions/{session_id}/messages" },
-    { pattern: "builds/{project_id}/status" },
-    { pattern: "no-params/topic" },
-    { pattern: "{session_id}/logs/{level}" },
-  ]
-  const patterns = convertTopicPatterns(topics, uuid)
-  expect(patterns).toEqual([
-    `spellbook/sessions/${uuid}/messages`,
-    "builds/+/status",
-    "no-params/topic",
-    `${uuid}/logs/+`,
-  ])
+  const agentId = "abc-123"
+  const topics = [{ pattern: "{agent_id}/events/{severity}/{project}" }]
+  const patterns = convertTopicPatterns(topics, agentId)
+  expect(patterns).toEqual([`${agentId}/events/+/+`])
 })
 
-test("{session_id} not substituted when sessionId is undefined", () => {
+test("convertTopicPatterns: {agent_id} appears multiple times", () => {
   const { convertTopicPatterns } = require("../../src/mcp/index")
-  const topics = [
-    { pattern: "spellbook/sessions/{session_id}/messages" },
-  ]
-  // Explicit undefined
-  const patterns = convertTopicPatterns(topics, undefined)
-  expect(patterns).toEqual(["spellbook/sessions/+/messages"])
-})
-
-test("EventEmitNotificationSchema has correct method literal for SDK compat", () => {
-  // The MCP SDK's setNotificationHandler extracts the method literal
-  // from the schema to register handlers. Verify our schema has the right structure.
-  const parsed = EventEmitNotificationSchema.safeParse({
-    method: "events/emit",
-    params: { topic: "t", event_id: "e", payload: null },
-  })
-  expect(parsed.success).toBe(true)
-  if (parsed.success) {
-    expect(parsed.data.method).toBe("events/emit")
-  }
-})
-
-test("EventEmitNotificationSchema handles optional fields", () => {
-  const minimal = {
-    method: "events/emit",
-    params: {
-      topic: "test",
-      event_id: "evt-1",
-      payload: null,
-    },
-  }
-  const result = EventEmitNotificationSchema.safeParse(minimal)
-  expect(result.success).toBe(true)
-  if (result.success) {
-    expect(result.data.params.retained).toBeUndefined()
-    expect(result.data.params.requested_effects).toBeUndefined()
-    expect(result.data.params.source).toBeUndefined()
-    expect(result.data.params.timestamp).toBeUndefined()
-  }
-})
-
-test("resolveEventPermissions respects server events config", () => {
-  const { resolveEventPermissions } = require("../../src/mcp/index")
-  // Server with explicit permissions
-  const mcp = {
-    type: "stdio" as const,
-    command: "test",
-    args: [],
-    events: {
-      inject_context: true,
-      notify_user: false,
-      trigger_turn: true,
-    },
-  }
-  const perms = resolveEventPermissions(mcp)
-  expect(perms).toEqual({
-    inject_context: true,
-    notify_user: false,
-    trigger_turn: true,
-  })
-})
-
-test("default permissions when server has no events config", () => {
-  const { resolveEventPermissions } = require("../../src/mcp/index")
-  // When a server has no events config, resolveEventPermissions should produce
-  // defaults: inject_context=false, notify_user=true, trigger_turn=false
-  const mcp = {
-    type: "stdio" as const,
-    command: "test",
-    args: [],
-    // no events field
-  }
-  const resolved = resolveEventPermissions(mcp)
-  expect(resolved).toEqual({
-    inject_context: false,
-    notify_user: true,
-    trigger_turn: false,
-  })
-})
-
-test("session_id from InitializeResult._meta flows through to subscribe patterns", () => {
-  // This test validates the full chain:
-  // 1. Server declares topics with {session_id} in capabilities
-  // 2. convertTopicPatterns receives the session UUID
-  // 3. Subscribe request contains the literal UUID, not a + wildcard
-  const { convertTopicPatterns } = require("../../src/mcp/index")
-
-  const sessionId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-  const serverTopics = [
-    { pattern: "spellbook/sessions/{session_id}/messages" },
-    { pattern: "spellbook/sessions/{session_id}/status" },
-    { pattern: "metrics/{host}/cpu" },
-  ]
-
-  const patterns = convertTopicPatterns(serverTopics, sessionId)
-
-  // {session_id} slots get the real UUID
-  expect(patterns[0]).toBe(`spellbook/sessions/${sessionId}/messages`)
-  expect(patterns[1]).toBe(`spellbook/sessions/${sessionId}/status`)
-  // Other {param} slots still get + wildcard
-  expect(patterns[2]).toBe("metrics/+/cpu")
-
-  // Without session_id, all {param} become +
-  const wildcardPatterns = convertTopicPatterns(serverTopics)
-  expect(wildcardPatterns[0]).toBe("spellbook/sessions/+/messages")
-  expect(wildcardPatterns[1]).toBe("spellbook/sessions/+/status")
-  expect(wildcardPatterns[2]).toBe("metrics/+/cpu")
-})
-
-test("resolveEventPermissions includes topicOverrides when topics config present", () => {
-  const { resolveEventPermissions } = require("../../src/mcp/index")
-  const mcp = {
-    type: "local" as const,
-    command: ["test"],
-    events: {
-      inject_context: false,
-      notify_user: true,
-      trigger_turn: false,
-      topics: {
-        "alerts/#": { inject_context: true, trigger_turn: true },
-        "metrics/+/cpu": { notify_user: false },
-      },
-    },
-  }
-  const perms = resolveEventPermissions(mcp)
-  expect(perms.inject_context).toBe(false)
-  expect(perms.notify_user).toBe(true)
-  expect(perms.trigger_turn).toBe(false)
-  expect(perms.topicOverrides).toBeDefined()
-  expect(perms.topicOverrides!["alerts/#"]).toEqual({ inject_context: true, trigger_turn: true })
-  expect(perms.topicOverrides!["metrics/+/cpu"]).toEqual({ notify_user: false })
-})
-
-test("resolveEventPermissions returns undefined topicOverrides when no topics config", () => {
-  const { resolveEventPermissions } = require("../../src/mcp/index")
-  const mcp = {
-    type: "local" as const,
-    command: ["test"],
-    events: {
-      inject_context: true,
-      notify_user: true,
-      trigger_turn: false,
-    },
-  }
-  const perms = resolveEventPermissions(mcp)
-  expect(perms.topicOverrides).toBeUndefined()
-})
-
-test("convertTopicPatterns: multiple {param} types get + except {session_id}", () => {
-  const { convertTopicPatterns } = require("../../src/mcp/index")
-  const uuid = "abc-123"
-  const topics = [
-    { pattern: "{session_id}/events/{severity}/{project}" },
-  ]
-  const patterns = convertTopicPatterns(topics, uuid)
-  expect(patterns).toEqual([`${uuid}/events/+/+`])
-})
-
-test("convertTopicPatterns: {session_id} appears multiple times", () => {
-  const { convertTopicPatterns } = require("../../src/mcp/index")
-  const uuid = "my-uuid"
-  const topics = [
-    { pattern: "sessions/{session_id}/sub/{session_id}/data" },
-  ]
-  const patterns = convertTopicPatterns(topics, uuid)
-  expect(patterns).toEqual([`sessions/${uuid}/sub/${uuid}/data`])
+  const agentId = "my-agent"
+  const topics = [{ pattern: "agents/{agent_id}/sub/{agent_id}/data" }]
+  const patterns = convertTopicPatterns(topics, agentId)
+  expect(patterns).toEqual([`agents/${agentId}/sub/${agentId}/data`])
 })
 
 test("mqttTopicMatch used for subscription defense-in-depth", () => {
   // Verify the mqttTopicMatch function is importable from event-queue
   const { mqttTopicMatch } = require("../../src/session/event-queue")
   // Simulates the defense-in-depth check in the notification handler
-  const activeSubs = ["spellbook/sessions/abc/+", "metrics/#"]
+  const activeSubs = ["agents/abc/+", "metrics/#"]
 
   // Should match
-  expect(activeSubs.some((p: string) => mqttTopicMatch(p, "spellbook/sessions/abc/messages"))).toBe(true)
+  expect(activeSubs.some((p: string) => mqttTopicMatch(p, "agents/abc/messages"))).toBe(true)
   expect(activeSubs.some((p: string) => mqttTopicMatch(p, "metrics/cpu/load"))).toBe(true)
 
   // Should NOT match - unsubscribed topic
   expect(activeSubs.some((p: string) => mqttTopicMatch(p, "other/topic"))).toBe(false)
 })
 
-test("EventEmitNotificationSchema handles all effect types", () => {
-  const notification = {
-    method: "events/emit",
-    params: {
-      topic: "test",
-      event_id: "evt-1",
-      payload: "data",
-      requested_effects: [
-        { type: "inject_context", priority: "urgent" },
-        { type: "notify_user", priority: "normal" },
-        { type: "trigger_turn", priority: "high" },
-      ],
+test("resolveEventConfig defaults to trusted when no events config", () => {
+  const { resolveEventConfig } = require("../../src/mcp/index")
+  const mcp = { type: "local" as const, command: ["test"] }
+  const cfg = resolveEventConfig(mcp)
+  expect(cfg.trust).toBe("trusted")
+  expect(cfg.defaults).toEqual({})
+  expect(cfg.topicOverrides).toBeUndefined()
+})
+
+test("resolveEventConfig returns per-kind defaults from events config", () => {
+  const { resolveEventConfig } = require("../../src/mcp/index")
+  const mcp = {
+    type: "local" as const,
+    command: ["test"],
+    events: {
+      defaults: { content: "inject", signal: "silent" },
+      topics: {
+        "agents/{agent_id}/messages": "inject",
+        "global/announcements": "notify",
+      },
     },
   }
-  const result = EventEmitNotificationSchema.safeParse(notification)
-  expect(result.success).toBe(true)
-  if (result.success) {
-    const effects = result.data.params.requested_effects!
-    expect(effects).toHaveLength(3)
-    expect(effects[0].type).toBe("inject_context")
-    expect(effects[0].priority).toBe("urgent")
-    expect(effects[1].type).toBe("notify_user")
-    expect(effects[1].priority).toBe("normal")
-    expect(effects[2].type).toBe("trigger_turn")
-    expect(effects[2].priority).toBe("high")
+  const cfg = resolveEventConfig(mcp)
+  expect(cfg.trust).toBe("configured")
+  expect(cfg.defaults).toEqual({ content: "inject", signal: "silent" })
+  expect(cfg.topicOverrides).toEqual({
+    "agents/{agent_id}/messages": "inject",
+    "global/announcements": "notify",
+  })
+})
+
+test("resolveEventConfig honors explicit trust value", () => {
+  const { resolveEventConfig } = require("../../src/mcp/index")
+  const mcp = {
+    type: "local" as const,
+    command: ["test"],
+    events: { trust: "untrusted" as const },
   }
+  const cfg = resolveEventConfig(mcp)
+  expect(cfg.trust).toBe("untrusted")
+})
+
+test("resolveHandle four-step resolution order", () => {
+  // 1. per_topic_override
+  // 2. per_kind_default
+  // 3. server_suggestedHandle
+  // 4. kind_fallback (content -> inject, signal -> silent)
+  const { resolveHandle } = require("../../src/session/event-queue")
+
+  // Step 1 wins
+  expect(
+    resolveHandle({
+      topic: "a/b",
+      kind: "content",
+      perKindDefault: "notify",
+      serverSuggestedHandle: "silent",
+      topicOverrides: { "a/+": "interrupt" },
+    }),
+  ).toBe("interrupt")
+
+  // Step 2 when no override matches
+  expect(
+    resolveHandle({
+      topic: "other/topic",
+      kind: "content",
+      perKindDefault: "notify",
+      serverSuggestedHandle: "silent",
+      topicOverrides: { "a/+": "interrupt" },
+    }),
+  ).toBe("notify")
+
+  // Step 3 when no override and no default
+  expect(
+    resolveHandle({
+      topic: "x",
+      kind: "signal",
+      serverSuggestedHandle: "ask",
+    }),
+  ).toBe("ask")
+
+  // Step 4 fallback: content -> inject
+  expect(resolveHandle({ topic: "x", kind: "content" })).toBe("inject")
+
+  // Step 4 fallback: signal -> silent
+  expect(resolveHandle({ topic: "x", kind: "signal" })).toBe("silent")
 })

@@ -1,6 +1,13 @@
-import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
+import { test, expect, spyOn } from "bun:test"
 import { Effect, Layer } from "effect"
-import { EventQueue, formatMcpEvents, mqttTopicMatch, resolvePermissionsForTopic } from "../../src/session/event-queue"
+import {
+  EventQueue,
+  formatMcpEvents,
+  mqttTopicMatch,
+  resolveHandle,
+  type McpHandle,
+  type McpEventKind,
+} from "../../src/session/event-queue"
 import { Bus } from "../../src/bus"
 
 // Minimal Bus stub layer for testing
@@ -25,8 +32,8 @@ function runTest<A>(effect: Effect.Effect<A, never, EventQueue.Service>) {
   return Effect.runPromise(Effect.provide(effect, testLayer))
 }
 
-const SESSION_A = "session-a"
-const SESSION_B = "session-b"
+const AGENT_A = "agent-a"
+const AGENT_B = "agent-b"
 
 function makeEvent(overrides: Partial<{
   server: string
@@ -34,18 +41,23 @@ function makeEvent(overrides: Partial<{
   payload: unknown
   event_id: string
   retained: boolean
-  requested_effects: Array<{
-    type: "inject_context" | "notify_user" | "trigger_turn"
-    priority?: "low" | "normal" | "high" | "urgent"
-  }>
-}> = {}) {
+  priority: string
+  handle: McpHandle
+  kind: McpEventKind
+  source: string
+  expires_at: string
+}> = {}): EventQueue.EnqueueEvent {
   return {
     server: overrides.server ?? "test-server",
     topic: overrides.topic ?? "test/topic",
     payload: overrides.payload ?? { message: "hello" },
     event_id: overrides.event_id ?? `evt-${Math.random().toString(36).slice(2)}`,
     retained: overrides.retained,
-    requested_effects: overrides.requested_effects,
+    priority: overrides.priority,
+    handle: overrides.handle ?? "inject",
+    kind: overrides.kind ?? "content",
+    source: overrides.source,
+    expires_at: overrides.expires_at,
   }
 }
 
@@ -53,10 +65,10 @@ test("enqueue and drain returns events", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      const event = makeEvent({ event_id: "evt-1" })
-      yield* eq.enqueue(SESSION_A, event, "normal")
+      const event = makeEvent({ event_id: "evt-1", priority: "normal" })
+      yield* eq.enqueue(AGENT_A, event)
 
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "normal" })
+      const drained = yield* eq.drain(AGENT_A, { maxPriority: "normal" })
       expect(drained).toHaveLength(1)
       expect(drained[0].event_id).toBe("evt-1")
       expect(drained[0].priority).toBe("normal")
@@ -68,12 +80,12 @@ test("drain removes events from queue", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-1" }), "normal")
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-1", priority: "normal" }))
 
-      const first = yield* eq.drain(SESSION_A, { maxPriority: "normal" })
+      const first = yield* eq.drain(AGENT_A, { maxPriority: "normal" })
       expect(first).toHaveLength(1)
 
-      const second = yield* eq.drain(SESSION_A, { maxPriority: "normal" })
+      const second = yield* eq.drain(AGENT_A, { maxPriority: "normal" })
       expect(second).toHaveLength(0)
     }),
   )
@@ -83,7 +95,7 @@ test("empty drain returns empty array", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "urgent" })
+      const drained = yield* eq.drain(AGENT_A, { maxPriority: "urgent" })
       expect(drained).toHaveLength(0)
     }),
   )
@@ -93,11 +105,11 @@ test("priority ordering: urgent drains before high", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "high-1" }), "high")
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "urgent-1" }), "urgent")
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "normal-1" }), "normal")
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "high-1", priority: "high" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "urgent-1", priority: "urgent" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "normal-1", priority: "normal" }))
 
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "high" })
+      const drained = yield* eq.drain(AGENT_A, { maxPriority: "high" })
       expect(drained).toHaveLength(2) // urgent + high, not normal
       expect(drained[0].event_id).toBe("urgent-1")
       expect(drained[0].priority).toBe("urgent")
@@ -105,7 +117,7 @@ test("priority ordering: urgent drains before high", async () => {
       expect(drained[1].priority).toBe("high")
 
       // normal still in queue
-      const remaining = yield* eq.pending(SESSION_A)
+      const remaining = yield* eq.pending(AGENT_A)
       expect(remaining).toBe(1)
     }),
   )
@@ -121,19 +133,19 @@ test("TTL expiry: expired events are dropped", async () => {
       Effect.gen(function* () {
         const eq = yield* EventQueue.Service
         // Enqueue an urgent event (TTL = 5 minutes)
-        yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-ttl" }), "urgent")
+        yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-ttl", priority: "urgent" }))
 
         // Verify it's alive right now
-        const alive = yield* eq.drain(SESSION_A, { maxPriority: "urgent" })
+        const alive = yield* eq.drain(AGENT_A, { maxPriority: "urgent" })
         expect(alive).toHaveLength(1)
         expect(alive[0].event_id).toBe("evt-ttl")
 
         // Enqueue another event, then advance time past the 5-minute TTL
-        yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-expired" }), "urgent")
+        yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-expired", priority: "urgent" }))
         fakeTime += 6 * 60 * 1000 // advance 6 minutes
 
         // Drain should return nothing -- the event has expired
-        const expired = yield* eq.drain(SESSION_A, { maxPriority: "urgent" })
+        const expired = yield* eq.drain(AGENT_A, { maxPriority: "urgent" })
         expect(expired).toHaveLength(0)
       }),
     )
@@ -144,59 +156,33 @@ test("TTL expiry: expired events are dropped", async () => {
   }
 })
 
-test("priority inference from requested_effects", async () => {
+test("priority taken directly from EventParams, not inferred", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-infer",
-        requested_effects: [
-          { type: "inject_context", priority: "urgent" },
-        ],
-      })
-      // No explicit priority - should infer from requested_effects
-      yield* eq.enqueue(SESSION_A, event)
+      // v2 spec: priority is a top-level field on EventParams. No inference
+      // from requestedEffects (removed in v2).
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-urgent", priority: "urgent" }))
 
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "urgent" })
+      const drained = yield* eq.drain(AGENT_A, { maxPriority: "urgent" })
       expect(drained).toHaveLength(1)
       expect(drained[0].priority).toBe("urgent")
     }),
   )
 })
 
-test("priority inference uses most urgent effect, not first effect", async () => {
+test("per-agent isolation", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-multi-pri",
-        requested_effects: [
-          { type: "notify_user", priority: "low" },
-          { type: "inject_context", priority: "urgent" },
-        ],
-      })
-      // No explicit priority - should infer "urgent" from most urgent effect
-      yield* eq.enqueue(SESSION_A, event)
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-a", priority: "normal" }))
+      yield* eq.enqueue(AGENT_B, makeEvent({ event_id: "evt-b", priority: "normal" }))
 
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "urgent" })
-      expect(drained).toHaveLength(1)
-      expect(drained[0].priority).toBe("urgent")
-    }),
-  )
-})
-
-test("per-session isolation", async () => {
-  await runTest(
-    Effect.gen(function* () {
-      const eq = yield* EventQueue.Service
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-a" }), "normal")
-      yield* eq.enqueue(SESSION_B, makeEvent({ event_id: "evt-b" }), "normal")
-
-      const drainedA = yield* eq.drain(SESSION_A, { maxPriority: "normal" })
+      const drainedA = yield* eq.drain(AGENT_A, { maxPriority: "normal" })
       expect(drainedA).toHaveLength(1)
       expect(drainedA[0].event_id).toBe("evt-a")
 
-      const drainedB = yield* eq.drain(SESSION_B, { maxPriority: "normal" })
+      const drainedB = yield* eq.drain(AGENT_B, { maxPriority: "normal" })
       expect(drainedB).toHaveLength(1)
       expect(drainedB[0].event_id).toBe("evt-b")
     }),
@@ -207,14 +193,14 @@ test("pending count", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      expect(yield* eq.pending(SESSION_A)).toBe(0)
+      expect(yield* eq.pending(AGENT_A)).toBe(0)
 
-      yield* eq.enqueue(SESSION_A, makeEvent(), "normal")
-      yield* eq.enqueue(SESSION_A, makeEvent(), "high")
-      expect(yield* eq.pending(SESSION_A)).toBe(2)
+      yield* eq.enqueue(AGENT_A, makeEvent({ priority: "normal" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ priority: "high" }))
+      expect(yield* eq.pending(AGENT_A)).toBe(2)
 
-      yield* eq.drain(SESSION_A, { maxPriority: "high" })
-      expect(yield* eq.pending(SESSION_A)).toBe(1) // normal remains
+      yield* eq.drain(AGENT_A, { maxPriority: "high" })
+      expect(yield* eq.pending(AGENT_A)).toBe(1) // normal remains
     }),
   )
 })
@@ -223,152 +209,69 @@ test("drain with maxPriority=urgent only gets urgent", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "urgent" }), "urgent")
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "high" }), "high")
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "normal" }), "normal")
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "low" }), "low")
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "urgent", priority: "urgent" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "high", priority: "high" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "normal", priority: "normal" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "low", priority: "low" }))
 
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "urgent" })
+      const drained = yield* eq.drain(AGENT_A, { maxPriority: "urgent" })
       expect(drained).toHaveLength(1)
       expect(drained[0].event_id).toBe("urgent")
 
       // Others remain
-      expect(yield* eq.pending(SESSION_A)).toBe(3)
+      expect(yield* eq.pending(AGENT_A)).toBe(3)
     }),
   )
 })
 
-// --- Permission filtering tests ---
+// --- Handle-driven drain filtering ---
 
-test("events with inject_context effect are dropped when inject_context=false", async () => {
+test("handle=drop events are silently discarded at enqueue", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-denied",
-        requested_effects: [{ type: "inject_context", priority: "high" }],
-      })
-      yield* eq.enqueue(SESSION_A, {
-        ...event,
-        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
-      })
-
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(0)
+      yield* eq.enqueue(
+        AGENT_A,
+        makeEvent({ event_id: "evt-drop", handle: "drop", priority: "high" }),
+      )
+      expect(yield* eq.pending(AGENT_A)).toBe(0)
     }),
   )
 })
 
-test("events with notify_user effect pass through when notify_user=true (default)", async () => {
+test("handle=silent and handle=notify are not returned by drain", async () => {
+  // silent and notify are handled via application callbacks / toast UI;
+  // they must NOT reach formatMcpEvents and therefore must not appear in
+  // drain() output.
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-allowed",
-        requested_effects: [{ type: "notify_user", priority: "normal" }],
-      })
-      yield* eq.enqueue(SESSION_A, {
-        ...event,
-        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
-      })
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-silent", handle: "silent" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-notify", handle: "notify" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-inject", handle: "inject" }))
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-ask", handle: "ask" }))
+      yield* eq.enqueue(
+        AGENT_A,
+        makeEvent({ event_id: "evt-interrupt", handle: "interrupt" }),
+      )
 
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(1)
-      expect(drained[0].event_id).toBe("evt-allowed")
-      expect(drained[0].requested_effects).toEqual([{ type: "notify_user", priority: "normal" }])
+      const drained = yield* eq.drain(AGENT_A, { maxPriority: "low" })
+      const ids = drained.map((e) => e.event_id).sort()
+      expect(ids).toEqual(["evt-ask", "evt-inject", "evt-interrupt"])
     }),
   )
 })
 
-test("events with trigger_turn effect are dropped when trigger_turn=false (default)", async () => {
+test("expires_at in the past drops the event at enqueue", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-trigger-denied",
-        requested_effects: [{ type: "trigger_turn", priority: "urgent" }],
-      })
-      yield* eq.enqueue(SESSION_A, {
-        ...event,
-        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
-      })
-
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(0)
-    }),
-  )
-})
-
-test("events with mixed effects: allowed ones pass, denied ones filtered", async () => {
-  await runTest(
-    Effect.gen(function* () {
-      const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-mixed",
-        requested_effects: [
-          { type: "inject_context", priority: "high" },
-          { type: "notify_user", priority: "normal" },
-          { type: "trigger_turn", priority: "urgent" },
-        ],
-      })
-      yield* eq.enqueue(SESSION_A, {
-        ...event,
-        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
-      })
-
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(1)
-      expect(drained[0].requested_effects).toEqual([
-        { type: "notify_user", priority: "normal" },
-      ])
-    }),
-  )
-})
-
-test("events with no requested_effects always pass through (payload-only)", async () => {
-  await runTest(
-    Effect.gen(function* () {
-      const eq = yield* EventQueue.Service
-      const event = makeEvent({ event_id: "evt-payload-only" })
-      yield* eq.enqueue(SESSION_A, {
-        ...event,
-        permissions: { inject_context: false, notify_user: false, trigger_turn: false },
-      })
-
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(1)
-      expect(drained[0].event_id).toBe("evt-payload-only")
-    }),
-  )
-})
-
-test("backward compat: events without permissions field are accepted", async () => {
-  await runTest(
-    Effect.gen(function* () {
-      const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-no-perms",
-        requested_effects: [
-          { type: "inject_context", priority: "high" },
-          { type: "trigger_turn", priority: "urgent" },
-        ],
-      })
-      // No permissions field at all
-      yield* eq.enqueue(SESSION_A, event)
-
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(1)
-      expect(drained[0].requested_effects).toHaveLength(2)
-      // Verify effect types are preserved
-      const effectTypes = drained[0].requested_effects!.map((e) => e.type)
-      expect(effectTypes).toContain("inject_context")
-      expect(effectTypes).toContain("trigger_turn")
-      // Verify priorities are preserved
-      const effectPriorities = drained[0].requested_effects!.map((e) => e.priority)
-      expect(effectPriorities).toContain("high")
-      expect(effectPriorities).toContain("urgent")
-      // Verify inferred priority is "urgent" (most urgent effect)
-      expect(drained[0].priority).toBe("urgent")
+      const past = new Date(Date.now() - 60_000).toISOString()
+      yield* eq.enqueue(
+        AGENT_A,
+        makeEvent({ event_id: "evt-expired", expires_at: past }),
+      )
+      expect(yield* eq.pending(AGENT_A)).toBe(0)
     }),
   )
 })
@@ -377,13 +280,16 @@ test("enqueue with invalid priority string: defaults to normal", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-bad-pri" }), "bogus_priority")
+      yield* eq.enqueue(
+        AGENT_A,
+        makeEvent({ event_id: "evt-bad-pri", priority: "bogus_priority" }),
+      )
 
       // Event is pending in the queue
-      expect(yield* eq.pending(SESSION_A)).toBe(1)
+      expect(yield* eq.pending(AGENT_A)).toBe(1)
 
       // Invalid priority was coerced to "normal", so it drains at normal level
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "normal" })
+      const drained = yield* eq.drain(AGENT_A, { maxPriority: "normal" })
       expect(drained).toHaveLength(1)
       expect(drained[0].priority).toBe("normal")
     }),
@@ -401,13 +307,13 @@ test("mixed TTL drain: expired events dropped, alive events returned", async () 
         const eq = yield* EventQueue.Service
 
         // Enqueue an urgent event (TTL = 5 min) and a low event (TTL = 24h)
-        yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-urgent" }), "urgent")
-        yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-low" }), "low")
+        yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-urgent", priority: "urgent" }))
+        yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-low", priority: "low" }))
 
         // Advance time past urgent TTL (5 min) but within low TTL (24h)
         fakeTime += 6 * 60 * 1000 // 6 minutes
 
-        const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
+        const drained = yield* eq.drain(AGENT_A, { maxPriority: "low" })
         // Only the low-priority event should survive
         expect(drained).toHaveLength(1)
         expect(drained[0].event_id).toBe("evt-low")
@@ -429,6 +335,8 @@ test("formatMcpEvents produces correct XML-like output", () => {
       payload: { text: "hello" },
       event_id: "evt-1",
       priority: "high",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -450,6 +358,8 @@ test("formatMcpEvents with string payload and no header", () => {
       payload: "plain text payload",
       event_id: "evt-2",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -470,6 +380,8 @@ test("formatMcpEvents includes trust when getServerTrust provided", () => {
       payload: { ok: true },
       event_id: "evt-3",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -479,7 +391,7 @@ test("formatMcpEvents includes trust when getServerTrust provided", () => {
   expect(result).toContain('server="spellbook"')
 })
 
-test("formatMcpEvents includes source and correlation_id when present", () => {
+test("formatMcpEvents includes source but NOT correlation_id (spec v2)", () => {
   const events: EventQueue.QueuedEvent[] = [
     {
       server: "test-server",
@@ -487,18 +399,43 @@ test("formatMcpEvents includes source and correlation_id when present", () => {
       payload: "data",
       event_id: "evt-4",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
       source: "upstream-plugin",
-      correlation_id: "corr-abc",
     },
   ]
   const result = formatMcpEvents(events)
   expect(result).toContain('source="upstream-plugin"')
-  expect(result).toContain('correlation_id="corr-abc"')
+  // correlation_id was removed in spec v2
+  expect(result).not.toContain("correlation_id=")
 })
 
-test("formatMcpEvents omits source and correlation_id when absent", () => {
+test("formatMcpEvents attribute order: server, topic, priority, event_id, trust, source", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: "s",
+      topic: "t",
+      payload: "p",
+      event_id: "e",
+      priority: "normal",
+      handle: "inject",
+      kind: "content",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+      source: "src",
+    },
+  ]
+  const result = formatMcpEvents(events, undefined, () => "trusted")
+  // The attributes must appear in the specified order.
+  const match = result.match(
+    /server="[^"]*" topic="[^"]*" priority="[^"]*" event_id="[^"]*" trust="[^"]*" source="[^"]*"/,
+  )
+  expect(match).not.toBeNull()
+})
+
+test("formatMcpEvents omits source when absent", () => {
   const events: EventQueue.QueuedEvent[] = [
     {
       server: "test-server",
@@ -506,13 +443,14 @@ test("formatMcpEvents omits source and correlation_id when absent", () => {
       payload: "data",
       event_id: "evt-5",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
   ]
   const result = formatMcpEvents(events)
   expect(result).not.toContain("source=")
-  expect(result).not.toContain("correlation_id=")
 })
 
 test("formatMcpEvents escapes XML special characters in payload", () => {
@@ -523,6 +461,8 @@ test("formatMcpEvents escapes XML special characters in payload", () => {
       payload: "</mcp:event><injected/>",
       event_id: "evt-escape",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -543,6 +483,8 @@ test("formatMcpEvents escapes & and ' in string payload", () => {
       payload: "Tom & Jerry's adventure",
       event_id: "evt-ampersand",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -551,35 +493,98 @@ test("formatMcpEvents escapes & and ' in string payload", () => {
   expect(result).toContain("Tom &amp; Jerry&#39;s adventure")
 })
 
-test("clear removes session queue", async () => {
+test("formatMcpEvents escapes special characters in attribute values", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: 'server "with" quotes',
+      topic: "topic/<with>/&special",
+      payload: "data",
+      event_id: "evt-attr",
+      priority: "normal",
+      handle: "inject",
+      kind: "content",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+      source: "it's me",
+    },
+  ]
+  const result = formatMcpEvents(events)
+  expect(result).toContain('server="server &quot;with&quot; quotes"')
+  expect(result).toContain('topic="topic/&lt;with&gt;/&amp;special"')
+  expect(result).toContain('source="it&#39;s me"')
+})
+
+test("formatMcpEvents adds default header when concatenating multiple events", () => {
+  const base = {
+    server: "s",
+    topic: "t",
+    payload: "p",
+    priority: "normal" as const,
+    handle: "inject" as const,
+    kind: "content" as const,
+    received_at: Date.now(),
+    ttl_ms: 60000,
+  }
+  const events: EventQueue.QueuedEvent[] = [
+    { ...base, event_id: "e1" },
+    { ...base, event_id: "e2" },
+  ]
+  const result = formatMcpEvents(events)
+  expect(result).toContain("MCP events received since your last response:")
+  expect(result.indexOf("e1")).toBeGreaterThan(-1)
+  expect(result.indexOf("e2")).toBeGreaterThan(-1)
+})
+
+test("formatMcpEvents does not add default header for a single event", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: "s",
+      topic: "t",
+      payload: "p",
+      event_id: "e1",
+      priority: "normal",
+      handle: "inject",
+      kind: "content",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+    },
+  ]
+  const result = formatMcpEvents(events)
+  expect(result).not.toContain("MCP events received")
+})
+
+test("clear removes agent queue", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-clear" }), "normal")
-      expect(yield* eq.pending(SESSION_A)).toBe(1)
+      yield* eq.enqueue(
+        AGENT_A,
+        makeEvent({ event_id: "evt-clear", priority: "normal" }),
+      )
+      expect(yield* eq.pending(AGENT_A)).toBe(1)
 
-      yield* eq.clear(SESSION_A)
-      expect(yield* eq.pending(SESSION_A)).toBe(0)
+      yield* eq.clear(AGENT_A)
+      expect(yield* eq.pending(AGENT_A)).toBe(0)
     }),
   )
 })
 
-test("clear only removes the target session", async () => {
+test("clear only removes the target agent", async () => {
   await runTest(
     Effect.gen(function* () {
       const eq = yield* EventQueue.Service
-      yield* eq.enqueue(SESSION_A, makeEvent({ event_id: "evt-a" }), "normal")
-      yield* eq.enqueue(SESSION_B, makeEvent({ event_id: "evt-b" }), "normal")
+      yield* eq.enqueue(AGENT_A, makeEvent({ event_id: "evt-a", priority: "normal" }))
+      yield* eq.enqueue(AGENT_B, makeEvent({ event_id: "evt-b", priority: "normal" }))
 
-      yield* eq.clear(SESSION_A)
+      yield* eq.clear(AGENT_A)
 
-      expect(yield* eq.pending(SESSION_A)).toBe(0)
-      expect(yield* eq.pending(SESSION_B)).toBe(1)
+      expect(yield* eq.pending(AGENT_A)).toBe(0)
+      expect(yield* eq.pending(AGENT_B)).toBe(1)
     }),
   )
 })
 
-// --- MQTT topic matching tests (Gap 5 defense-in-depth) ---
+// --- MQTT topic matching tests ---
 
 test("mqttTopicMatch: exact match", () => {
   expect(mqttTopicMatch("a/b/c", "a/b/c")).toBe(true)
@@ -612,94 +617,70 @@ test("mqttTopicMatch: topic longer than pattern fails", () => {
   expect(mqttTopicMatch("a/b", "a/b/c")).toBe(false)
 })
 
-// --- Per-topic permission override tests (Gap 2) ---
+// --- Handle resolution ---
 
-test("resolvePermissionsForTopic: returns server defaults when no overrides", () => {
-  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
-  const result = resolvePermissionsForTopic(serverPerms, "some/topic")
-  expect(result).toEqual(serverPerms)
+test("resolveHandle: per-topic override takes precedence", () => {
+  const h = resolveHandle({
+    topic: "alerts/critical",
+    kind: "content",
+    perKindDefault: "notify",
+    serverSuggestedHandle: "silent",
+    topicOverrides: { "alerts/+": "interrupt" },
+  })
+  expect(h).toBe("interrupt")
 })
 
-test("resolvePermissionsForTopic: returns server defaults when overrides is undefined", () => {
-  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
-  const result = resolvePermissionsForTopic(serverPerms, "some/topic", undefined)
-  expect(result).toEqual(serverPerms)
+test("resolveHandle: falls through to per-kind default when topic does not match", () => {
+  const h = resolveHandle({
+    topic: "metrics/cpu",
+    kind: "content",
+    perKindDefault: "inject",
+    serverSuggestedHandle: "silent",
+    topicOverrides: { "alerts/+": "interrupt" },
+  })
+  expect(h).toBe("inject")
 })
 
-test("resolvePermissionsForTopic: topic override merges on top of server defaults", () => {
-  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
-  const overrides = {
-    "alerts/#": { inject_context: true, trigger_turn: true },
-  }
-  const result = resolvePermissionsForTopic(serverPerms, "alerts/critical/fire", overrides)
-  expect(result).toEqual({ inject_context: true, notify_user: true, trigger_turn: true })
+test("resolveHandle: falls through to server suggestion when no client overrides", () => {
+  const h = resolveHandle({
+    topic: "metrics/cpu",
+    kind: "signal",
+    serverSuggestedHandle: "notify",
+  })
+  expect(h).toBe("notify")
 })
 
-test("resolvePermissionsForTopic: non-matching topic uses server defaults", () => {
-  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
-  const overrides = {
-    "alerts/#": { inject_context: true },
-  }
-  const result = resolvePermissionsForTopic(serverPerms, "metrics/cpu", overrides)
-  expect(result).toEqual(serverPerms)
+test("resolveHandle: content kind fallback is inject", () => {
+  const h = resolveHandle({
+    topic: "t",
+    kind: "content",
+  })
+  expect(h).toBe("inject")
 })
 
-test("resolvePermissionsForTopic: partial override only changes specified fields", () => {
-  const serverPerms = { inject_context: false, notify_user: true, trigger_turn: false }
-  const overrides = {
-    "urgent/+/alert": { trigger_turn: true },
-  }
-  const result = resolvePermissionsForTopic(serverPerms, "urgent/fire/alert", overrides)
-  expect(result).toEqual({ inject_context: false, notify_user: true, trigger_turn: true })
+test("resolveHandle: signal kind fallback is silent", () => {
+  const h = resolveHandle({
+    topic: "t",
+    kind: "signal",
+  })
+  expect(h).toBe("silent")
 })
 
-test("per-topic override allows inject_context for matching topic in enqueue", async () => {
-  await runTest(
-    Effect.gen(function* () {
-      const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-topic-override",
-        topic: "alerts/critical",
-        requested_effects: [{ type: "inject_context", priority: "high" }],
-      })
-      yield* eq.enqueue(SESSION_A, {
-        ...event,
-        // Server-level: inject_context=false
-        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
-        // Per-topic override for alerts/*: inject_context=true
-        topicOverrides: { "alerts/+": { inject_context: true } },
-      })
-
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(1)
-      expect(drained[0].event_id).toBe("evt-topic-override")
-    }),
-  )
+test("resolveHandle: first matching topic override wins", () => {
+  const h = resolveHandle({
+    topic: "alerts/warn",
+    kind: "content",
+    topicOverrides: {
+      "alerts/critical": "interrupt",
+      "alerts/+": "notify",
+      "#": "silent",
+    },
+  })
+  // alerts/critical does not match; alerts/+ matches first.
+  expect(h).toBe("notify")
 })
 
-test("per-topic override does not apply to non-matching topics", async () => {
-  await runTest(
-    Effect.gen(function* () {
-      const eq = yield* EventQueue.Service
-      const event = makeEvent({
-        event_id: "evt-no-match",
-        topic: "metrics/cpu",
-        requested_effects: [{ type: "inject_context", priority: "high" }],
-      })
-      yield* eq.enqueue(SESSION_A, {
-        ...event,
-        permissions: { inject_context: false, notify_user: true, trigger_turn: false },
-        topicOverrides: { "alerts/+": { inject_context: true } },
-      })
-
-      // inject_context is false at server level, topic doesn't match override
-      const drained = yield* eq.drain(SESSION_A, { maxPriority: "low" })
-      expect(drained).toHaveLength(0)
-    }),
-  )
-})
-
-// --- server_trust wiring test (Gap 11) ---
+// --- server_trust wiring test ---
 
 test("formatMcpEvents trust callback: configured vs trusted vs unknown", () => {
   const events: EventQueue.QueuedEvent[] = [
@@ -709,6 +690,8 @@ test("formatMcpEvents trust callback: configured vs trusted vs unknown", () => {
       payload: "a",
       event_id: "evt-a",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -718,6 +701,8 @@ test("formatMcpEvents trust callback: configured vs trusted vs unknown", () => {
       payload: "b",
       event_id: "evt-b",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -727,6 +712,8 @@ test("formatMcpEvents trust callback: configured vs trusted vs unknown", () => {
       payload: "c",
       event_id: "evt-c",
       priority: "normal",
+      handle: "inject",
+      kind: "content",
       received_at: Date.now(),
       ttl_ms: 60000,
     },
@@ -734,14 +721,16 @@ test("formatMcpEvents trust callback: configured vs trusted vs unknown", () => {
 
   // Simulate the trust derivation logic from prompt.ts
   const mcpConfig: Record<string, any> = {
-    "server-with-events": { type: "local", command: ["test"], events: { inject_context: true } },
+    "server-with-events": { type: "local", command: ["test"], events: { defaults: { content: "inject" } } },
     "server-no-events": { type: "local", command: ["test"] },
   }
 
   const result = formatMcpEvents(events, undefined, (serverName) => {
     const cfg = mcpConfig[serverName]
     if (!cfg || typeof cfg !== "object" || !("type" in cfg)) return "unknown"
-    if (cfg.events) return "configured"
+    const eventsCfg = (cfg as any).events
+    if (eventsCfg?.trust) return eventsCfg.trust as string
+    if (eventsCfg) return "configured"
     return "trusted"
   })
 
@@ -758,4 +747,32 @@ test("formatMcpEvents trust callback: configured vs trusted vs unknown", () => {
   expect(eventLine1).toContain('trust="configured"')
   expect(eventLine2).toContain('trust="trusted"')
   expect(eventLine3).toContain('trust="unknown"')
+})
+
+test("formatMcpEvents trust callback honors explicit events.trust", () => {
+  const events: EventQueue.QueuedEvent[] = [
+    {
+      server: "my-server",
+      topic: "t",
+      payload: "d",
+      event_id: "e",
+      priority: "normal",
+      handle: "inject",
+      kind: "content",
+      received_at: Date.now(),
+      ttl_ms: 60000,
+    },
+  ]
+  const mcpConfig: Record<string, any> = {
+    "my-server": { type: "local", command: ["x"], events: { trust: "untrusted" } },
+  }
+  const result = formatMcpEvents(events, undefined, (serverName) => {
+    const cfg = mcpConfig[serverName]
+    if (!cfg || typeof cfg !== "object" || !("type" in cfg)) return "unknown"
+    const eventsCfg = (cfg as any).events
+    if (eventsCfg?.trust) return eventsCfg.trust as string
+    if (eventsCfg) return "configured"
+    return "trusted"
+  })
+  expect(result).toContain('trust="untrusted"')
 })

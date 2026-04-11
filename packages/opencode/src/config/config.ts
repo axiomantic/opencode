@@ -370,17 +370,23 @@ export namespace Config {
     return list.toReversed()
   }
 
-  const McpEventsTopicOverride = z.object({
-    inject_context: z.boolean().optional(),
-    notify_user: z.boolean().optional(),
-    trigger_turn: z.boolean().optional(),
+  // v2 spec: handle levels control HOW an event is processed by the client.
+  // The client always has final say (zero-trust) — resolution order is:
+  //   per_topic_override ?? per_kind_default ?? server_suggestedHandle ?? kind_fallback
+  // where kind_fallback is "inject" for content and "silent" for signal.
+  const McpEventsHandle = z.enum(["drop", "silent", "notify", "ask", "inject", "interrupt"])
+
+  const McpEventsTrust = z.enum(["trusted", "untrusted", "unknown", "configured"])
+
+  const McpEventsKindDefaults = z.object({
+    content: McpEventsHandle.optional(),
+    signal: McpEventsHandle.optional(),
   })
 
-  const McpEventsPermissions = z.object({
-    inject_context: z.boolean().optional().default(false),
-    notify_user: z.boolean().optional().default(true),
-    trigger_turn: z.boolean().optional().default(false),
-    topics: z.record(z.string(), McpEventsTopicOverride).optional(),
+  const McpEventsConfig = z.object({
+    trust: McpEventsTrust.optional(),
+    defaults: McpEventsKindDefaults.optional(),
+    topics: z.record(z.string(), McpEventsHandle).optional(),
   }).optional()
 
   export const McpLocal = z
@@ -398,8 +404,8 @@ export namespace Config {
         .positive()
         .optional()
         .describe("Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."),
-      events: McpEventsPermissions
-        .describe("Per-effect permissions for MCP events. Controls which event effects this server is allowed to request."),
+      events: McpEventsConfig
+        .describe("Client configuration for MCP events. Controls trust level and per-topic handle levels for events emitted by this server."),
     })
     .strict()
     .meta({
@@ -439,8 +445,8 @@ export namespace Config {
         .positive()
         .optional()
         .describe("Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."),
-      events: McpEventsPermissions
-        .describe("Per-effect permissions for MCP events. Controls which event effects this server is allowed to request."),
+      events: McpEventsConfig
+        .describe("Client configuration for MCP events. Controls trust level and per-topic handle levels for events emitted by this server."),
     })
     .strict()
     .meta({

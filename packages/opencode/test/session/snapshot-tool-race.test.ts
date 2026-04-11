@@ -73,6 +73,9 @@ const mcp = Layer.succeed(
     supportsOAuth: () => Effect.succeed(false),
     hasStoredTokens: () => Effect.succeed(false),
     getAuthStatus: () => Effect.succeed("not_authenticated" as const),
+    subscribeAgent: () => Effect.void,
+    unsubscribeAgent: () => Effect.void,
+    eventConfig: () => Effect.succeed(undefined),
   }),
 )
 

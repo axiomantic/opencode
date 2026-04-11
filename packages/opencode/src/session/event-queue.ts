@@ -2,6 +2,25 @@ import { Effect, Layer, ServiceMap } from "effect"
 import { Bus } from "@/bus"
 
 /**
+ * MCP Events Spec v2 client-side handle level.
+ *
+ * Controls HOW an event is processed by the client. The client always has
+ * final say (zero-trust model). Resolution order:
+ *
+ *   per_topic_override ?? per_kind_default ?? server_suggestedHandle ?? kind_fallback
+ *
+ * where kind_fallback is "inject" for content and "silent" for signal.
+ */
+export type McpHandle = "drop" | "silent" | "notify" | "ask" | "inject" | "interrupt"
+
+export type McpEventKind = "content" | "signal"
+
+/** Handles that cause the event to be injected into LLM context. */
+export function handleInjects(handle: McpHandle): boolean {
+  return handle === "inject" || handle === "ask" || handle === "interrupt"
+}
+
+/**
  * Match a concrete MQTT topic against a pattern with wildcards.
  * `+` matches exactly one segment, `#` matches the rest of the topic.
  */
@@ -19,28 +38,28 @@ export function mqttTopicMatch(pattern: string, topic: string): boolean {
 }
 
 /**
- * Resolve per-effect permissions for an event, merging per-topic overrides
- * on top of server-level defaults.
+ * Resolve the effective handle for an event using the v2 spec resolution order:
+ *
+ *   per_topic_override ?? per_kind_default ?? server_suggestedHandle ?? kind_fallback
+ *
+ * The client always has final say. A value of `undefined` for any arg is
+ * treated as "not set" and falls through to the next step.
  */
-export function resolvePermissionsForTopic(
-  serverPerms: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean },
-  topic: string,
-  topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>,
-): { inject_context: boolean; notify_user: boolean; trigger_turn: boolean } {
-  if (!topicOverrides) return serverPerms
-
-  // Find the first matching topic pattern
-  for (const [pattern, overrides] of Object.entries(topicOverrides)) {
-    if (mqttTopicMatch(pattern, topic)) {
-      return {
-        inject_context: overrides.inject_context ?? serverPerms.inject_context,
-        notify_user: overrides.notify_user ?? serverPerms.notify_user,
-        trigger_turn: overrides.trigger_turn ?? serverPerms.trigger_turn,
-      }
+export function resolveHandle(input: {
+  topic: string
+  kind: McpEventKind
+  perKindDefault?: McpHandle
+  serverSuggestedHandle?: McpHandle
+  topicOverrides?: Record<string, McpHandle>
+}): McpHandle {
+  if (input.topicOverrides) {
+    for (const [pattern, handle] of Object.entries(input.topicOverrides)) {
+      if (mqttTopicMatch(pattern, input.topic)) return handle
     }
   }
-
-  return serverPerms
+  if (input.perKindDefault) return input.perKindDefault
+  if (input.serverSuggestedHandle) return input.serverSuggestedHandle
+  return input.kind === "content" ? "inject" : "silent"
 }
 
 export namespace EventQueue {
@@ -50,15 +69,12 @@ export namespace EventQueue {
     payload: unknown
     event_id: string
     priority: "low" | "normal" | "high" | "urgent"
+    handle: McpHandle
+    kind: McpEventKind
     received_at: number
     ttl_ms: number
     retained?: boolean
-    requested_effects?: Array<{
-      type: "inject_context" | "notify_user" | "trigger_turn"
-      priority?: "low" | "normal" | "high" | "urgent"
-    }>
     source?: string
-    correlation_id?: string
     expires_at?: string
   }
 
@@ -77,34 +93,27 @@ export namespace EventQueue {
     low: 3,
   }
 
+  export interface EnqueueEvent {
+    server: string
+    topic: string
+    payload: unknown
+    event_id: string
+    priority?: string
+    handle: McpHandle
+    kind: McpEventKind
+    retained?: boolean
+    source?: string
+    expires_at?: string
+  }
+
   export interface Interface {
-    readonly enqueue: (
-      sessionID: string,
-      event: {
-        server: string
-        topic: string
-        payload: unknown
-        event_id: string
-        retained?: boolean
-        requested_effects?: QueuedEvent["requested_effects"]
-        permissions?: {
-          inject_context: boolean
-          notify_user: boolean
-          trigger_turn: boolean
-        }
-        topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>
-        source?: string
-        correlation_id?: string
-        expires_at?: string
-      },
-      priority?: string,
-    ) => Effect.Effect<void>
+    readonly enqueue: (agentID: string, event: EnqueueEvent) => Effect.Effect<void>
     readonly drain: (
-      sessionID: string,
+      agentID: string,
       opts: { maxPriority: "urgent" | "high" | "normal" | "low" },
     ) => Effect.Effect<QueuedEvent[]>
-    readonly pending: (sessionID: string) => Effect.Effect<number>
-    readonly clear: (sessionID: string) => Effect.Effect<void>
+    readonly pending: (agentID: string) => Effect.Effect<number>
+    readonly clear: (agentID: string) => Effect.Effect<void>
   }
 
   export class Service extends ServiceMap.Service<Service, Interface>()(
@@ -116,73 +125,43 @@ export namespace EventQueue {
     Effect.gen(function* () {
       const queues = new Map<string, QueuedEvent[]>()
 
-      function getQueue(sessionID: string): QueuedEvent[] {
-        let q = queues.get(sessionID)
+      function getQueue(agentID: string): QueuedEvent[] {
+        let q = queues.get(agentID)
         if (!q) {
           q = []
-          queues.set(sessionID, q)
+          queues.set(agentID, q)
         }
         return q
       }
 
-      function enqueue(
-        sessionID: string,
-        event: {
-          server: string
-          topic: string
-          payload: unknown
-          event_id: string
-          retained?: boolean
-          requested_effects?: QueuedEvent["requested_effects"]
-          permissions?: {
-            inject_context: boolean
-            notify_user: boolean
-            trigger_turn: boolean
-          }
-          topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>
-          source?: string
-          correlation_id?: string
-          expires_at?: string
-        },
-        priority?: string,
-      ) {
+      function enqueue(agentID: string, event: EnqueueEvent) {
         return Effect.sync(() => {
-          // Resolve effective permissions: per-topic overrides merged on top of server defaults
-          const effectivePermissions = event.permissions
-            ? resolvePermissionsForTopic(event.permissions, event.topic, event.topicOverrides)
-            : undefined
+          // v2 spec: drop handle means discard entirely (no processing).
+          if (event.handle === "drop") return
 
-          // Filter requested_effects by effective permissions
-          const allowedEffects = event.requested_effects?.filter((effect) => {
-            if (!effectivePermissions) return true // no permissions = allow all (backward compat)
-            return effectivePermissions[effect.type] === true
-          }) ?? []
+          // Use priority directly from EventParams (spec v2). No inference
+          // from requestedEffects -- that field was removed.
+          const raw = event.priority ?? "normal"
+          const p = (PRIORITY_ORDER[raw] !== undefined ? raw : "normal") as QueuedEvent["priority"]
 
-          // If event requested effects but all were filtered out, skip enqueue
-          if (event.requested_effects?.length && allowedEffects.length === 0) {
-            return // silently drop
+          // Honor expires_at from the server if present -- drop immediately
+          // expired events at enqueue time.
+          if (event.expires_at) {
+            const exp = Date.parse(event.expires_at)
+            if (!isNaN(exp) && exp <= Date.now()) return
           }
 
-          const filteredEffects = allowedEffects.length > 0 ? allowedEffects : undefined
-
-          // Infer priority from the MOST URGENT effect, not just the first one
-          const inferredPriority = filteredEffects?.reduce((best, eff) => {
-            const effPri = eff.priority ?? "normal"
-            return (PRIORITY_ORDER[effPri] ?? 2) < (PRIORITY_ORDER[best] ?? 2) ? effPri : best
-          }, "normal" as string) ?? "normal"
-          const raw = priority ?? inferredPriority
-          const p = (PRIORITY_ORDER[raw] !== undefined ? raw : "normal") as QueuedEvent["priority"]
-          const q = getQueue(sessionID)
+          const q = getQueue(agentID)
           q.push({
             server: event.server,
             topic: event.topic,
             payload: event.payload,
             event_id: event.event_id,
             retained: event.retained,
-            requested_effects: filteredEffects,
             source: event.source,
-            correlation_id: event.correlation_id,
             expires_at: event.expires_at,
+            handle: event.handle,
+            kind: event.kind,
             priority: p,
             received_at: Date.now(),
             ttl_ms: TTL_DEFAULTS[p] ?? TTL_DEFAULTS.normal,
@@ -191,25 +170,35 @@ export namespace EventQueue {
       }
 
       function drain(
-        sessionID: string,
+        agentID: string,
         opts: { maxPriority: "urgent" | "high" | "normal" | "low" },
       ) {
         return Effect.sync(() => {
-          const q = getQueue(sessionID)
+          const q = getQueue(agentID)
           const now = Date.now()
           const maxOrd = PRIORITY_ORDER[opts.maxPriority]
           const result: QueuedEvent[] = []
           const remaining: QueuedEvent[] = []
 
           for (const event of q) {
-            if (now > event.received_at + event.ttl_ms) continue // expired
+            // Expired by internal TTL
+            if (now > event.received_at + event.ttl_ms) continue
+            // Expired by server-provided expires_at
+            if (event.expires_at) {
+              const exp = Date.parse(event.expires_at)
+              if (!isNaN(exp) && exp <= now) continue
+            }
+            // Only inject/ask/interrupt handles feed the LLM. silent/notify are
+            // handled elsewhere (application callbacks, UI toasts) and must not
+            // reach formatMcpEvents. Keep them out of the drain result.
+            if (!handleInjects(event.handle)) continue
             if (PRIORITY_ORDER[event.priority] <= maxOrd) {
               result.push(event)
             } else {
               remaining.push(event)
             }
           }
-          queues.set(sessionID, remaining)
+          queues.set(agentID, remaining)
           // Sort by priority (urgent first)
           result.sort(
             (a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority],
@@ -218,13 +207,13 @@ export namespace EventQueue {
         })
       }
 
-      function pending(sessionID: string) {
-        return Effect.sync(() => getQueue(sessionID).length)
+      function pending(agentID: string) {
+        return Effect.sync(() => getQueue(agentID).length)
       }
 
-      function clear(sessionID: string) {
+      function clear(agentID: string) {
         return Effect.sync(() => {
-          queues.delete(sessionID)
+          queues.delete(agentID)
         })
       }
 
@@ -239,6 +228,7 @@ function escapeXmlAttr(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
+    .replace(/'/g, "&#39;")
 }
 
 function escapeXmlContent(s: string): string {
@@ -249,6 +239,18 @@ function escapeXmlContent(s: string): string {
     .replace(/'/g, "&#39;")
 }
 
+/**
+ * Format buffered MCP events as an XML envelope for injection into LLM
+ * context. Per the v2 spec the attribute order is:
+ *
+ *   server, topic, priority, event_id, trust, source
+ *
+ * All values are XML-escaped. `correlation_id` was removed in v2; applications
+ * that need correlation should encode it in the payload.
+ *
+ * When multiple events are concatenated, the caller typically passes a header
+ * line; the canonical header is `"MCP events received since your last response:"`.
+ */
 export function formatMcpEvents(
   events: EventQueue.QueuedEvent[],
   header?: string,
@@ -266,11 +268,12 @@ export function formatMcpEvents(
         attrs.push(`trust="${escapeXmlAttr(getServerTrust(e.server))}"`)
       }
       if (e.source) attrs.push(`source="${escapeXmlAttr(e.source)}"`)
-      if (e.correlation_id) attrs.push(`correlation_id="${escapeXmlAttr(e.correlation_id)}"`)
       const rawPayload = typeof e.payload === "string" ? e.payload : (JSON.stringify(e.payload) ?? "")
       const payloadStr = escapeXmlContent(rawPayload)
       return `<mcp:event ${attrs.join(" ")}>\n${payloadStr}\n</mcp:event>`
     })
     .join("\n")
-  return header ? `${header}\n\n${body}` : body
+  // Use the canonical header when two or more events are concatenated.
+  const useHeader = header ?? (events.length > 1 ? "MCP events received since your last response:" : undefined)
+  return useHeader ? `${useHeader}\n\n${body}` : body
 }

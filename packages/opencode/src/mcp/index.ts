@@ -32,19 +32,42 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
 
 /**
- * Resolve per-effect permissions for an MCP server config.
- * When no events config is present, defaults to safe values:
- *   inject_context=false, notify_user=true, trigger_turn=false
- *
- * Returns both server-level defaults and optional per-topic overrides.
+ * v2 spec client config shape. Mirrors `Config.Mcp.events` but pre-resolved to
+ * default values so callers don't need to `??` every field.
  */
-export function resolveEventPermissions(mcp: Config.Mcp) {
+export interface ResolvedEventConfig {
+  trust: "trusted" | "untrusted" | "unknown" | "configured"
+  defaults: {
+    content?: import("../session/event-queue").McpHandle
+    signal?: import("../session/event-queue").McpHandle
+  }
+  topicOverrides?: Record<string, import("../session/event-queue").McpHandle>
+}
+
+/**
+ * Resolve the v2 events config for an MCP server. Defaults:
+ *   trust: "configured" if any `events` config is present, else "trusted"
+ *
+ * Returns per-kind defaults and per-topic overrides as stored in the client
+ * config. Kind fallbacks (content->inject, signal->silent) are applied later
+ * in resolveHandle().
+ */
+export function resolveEventConfig(mcp: Config.Mcp): ResolvedEventConfig {
   const events = mcp.events
+  if (!events) {
+    return {
+      trust: "trusted",
+      defaults: {},
+      topicOverrides: undefined,
+    }
+  }
   return {
-    inject_context: events?.inject_context ?? false,
-    notify_user: events?.notify_user ?? true,
-    trigger_turn: events?.trigger_turn ?? false,
-    topicOverrides: events?.topics,
+    trust: (events.trust as ResolvedEventConfig["trust"]) ?? "configured",
+    defaults: {
+      content: events.defaults?.content as import("../session/event-queue").McpHandle | undefined,
+      signal: events.defaults?.signal as import("../session/event-queue").McpHandle | undefined,
+    },
+    topicOverrides: events.topics as Record<string, import("../session/event-queue").McpHandle> | undefined,
   }
 }
 
@@ -52,15 +75,22 @@ export function resolveEventPermissions(mcp: Config.Mcp) {
  * Convert topic patterns with {param} placeholders to MQTT-style + wildcards
  * for MCP event subscription.
  *
- * When a sessionId is provided, `{session_id}` placeholders are replaced with
- * the literal UUID so the server can enforce per-session topic isolation.
+ * When an agentId is provided, `{agent_id}` placeholders are replaced with
+ * the literal agent ID so the server can enforce per-agent topic isolation.
  * Remaining `{param}` placeholders are converted to `+` wildcards as before.
+ *
+ * For backward compatibility with spec v1 topics, `{session_id}` is still
+ * treated as an agent_id placeholder.
  */
-export function convertTopicPatterns(topics: Array<{ pattern: string }>, sessionId?: string): string[] {
+export function convertTopicPatterns(
+  topics: Array<{ pattern: string }>,
+  agentId?: string,
+): string[] {
   return topics.map((t) => {
     let pattern = t.pattern
-    if (sessionId) {
-      pattern = pattern.replace(/\{session_id\}/g, sessionId)
+    if (agentId) {
+      pattern = pattern.replace(/\{agent_id\}/g, agentId)
+      pattern = pattern.replace(/\{session_id\}/g, agentId)
     }
     return pattern.replace(/\{[^}]+\}/g, "+")
   })
@@ -69,18 +99,23 @@ export function convertTopicPatterns(topics: Array<{ pattern: string }>, session
 /**
  * Buffered MCP event, pushed by the notification handler and drained by the
  * prompt loop in prompt.ts.
+ *
+ * The buffer is client-global but each entry is already fanned out to a
+ * specific agent -- `agent_id` identifies the target opencode session.
+ * prompt.ts drains the buffer and routes entries to the matching agent's
+ * EventQueue.
  */
 export interface McpBufferedEvent {
+  agent_id: string
   server: string
   topic: string
   payload: unknown
   event_id: string
+  priority?: "low" | "normal" | "high" | "urgent"
+  handle: import("../session/event-queue").McpHandle
+  kind: import("../session/event-queue").McpEventKind
   retained?: boolean
-  requested_effects?: Array<{ type: "inject_context" | "notify_user" | "trigger_turn"; priority?: "low" | "normal" | "high" | "urgent" }>
-  permissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean }
-  topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>
   source?: string
-  correlation_id?: string
   expires_at?: string
 }
 
@@ -147,27 +182,16 @@ export namespace MCP {
   export const McpEvent = BusEvent.define(
     "mcp.event",
     z.object({
+      agent_id: z.string(),
       server: z.string(),
       topic: z.string(),
       payload: z.unknown(),
       event_id: z.string(),
+      priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+      handle: z.enum(["drop", "silent", "notify", "ask", "inject", "interrupt"]),
+      kind: z.enum(["content", "signal"]),
       retained: z.boolean().optional(),
-      requested_effects: z.array(z.object({
-        type: z.enum(["inject_context", "notify_user", "trigger_turn"]),
-        priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-      })).optional(),
-      permissions: z.object({
-        inject_context: z.boolean(),
-        notify_user: z.boolean(),
-        trigger_turn: z.boolean(),
-      }).optional(),
-      topicOverrides: z.record(z.string(), z.object({
-        inject_context: z.boolean().optional(),
-        notify_user: z.boolean().optional(),
-        trigger_turn: z.boolean().optional(),
-      })).optional(),
       source: z.string().optional(),
-      correlation_id: z.string().optional(),
       expires_at: z.string().optional(),
     }),
   )
@@ -357,6 +381,9 @@ export namespace MCP {
     readonly supportsOAuth: (mcpName: string) => Effect.Effect<boolean>
     readonly hasStoredTokens: (mcpName: string) => Effect.Effect<boolean>
     readonly getAuthStatus: (mcpName: string) => Effect.Effect<AuthStatus>
+    readonly subscribeAgent: (agentId: string) => Effect.Effect<void>
+    readonly unsubscribeAgent: (agentId: string) => Effect.Effect<void>
+    readonly eventConfig: (mcpName: string) => Effect.Effect<ResolvedEventConfig | undefined>
   }
 
   export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/MCP") {}
@@ -571,7 +598,50 @@ export namespace MCP {
         log.info("create() successfully created client", { key, toolCount: listed.length })
         return { mcpClient, status, defs: listed } satisfies CreateResult
       })
-      const subscriptions = new Map<string, string[]>()
+      // Per-agent subscription tracking. Each opencode chat session (agent)
+      // registers its own subscription set with each connected MCP server.
+      //
+      // serverSubscriptions[serverName][agentId] = { patterns, topicDecls }
+      //
+      // Fan-out on event arrival iterates all agent entries and delivers a
+      // copy to every agent whose patterns match the event topic (spec v2
+      // non-destructive fan-out).
+      interface TopicDecl {
+        pattern: string
+        kind: import("../session/event-queue").McpEventKind
+        suggestedHandle?: import("../session/event-queue").McpHandle
+      }
+      interface AgentSub {
+        patterns: string[]
+        topicDecls: TopicDecl[]
+      }
+      const serverSubscriptions = new Map<string, Map<string, AgentSub>>()
+
+      // Cached topic declarations from the server, keyed by server name.
+      // Populated by events/list at connect time. Used by subscribeAgent to
+      // resolve {agent_id} placeholders without re-fetching.
+      const serverTopicCatalog = new Map<string, TopicDecl[]>()
+
+      // Client trust assessment + handle config, keyed by server name.
+      // Populated when a server is created and reused on every event arrival.
+      const serverEventConfig = new Map<string, ResolvedEventConfig>()
+
+      // Bounded LRU of recently-seen event IDs for deduplication.
+      // Spec recommends ~1000 entries. Duplicate events are silently dropped.
+      const EVENT_DEDUP_LIMIT = 1000
+      const eventDedup = new Set<string>()
+
+      function dedupSeen(eventId: string): boolean {
+        if (eventDedup.has(eventId)) return true
+        eventDedup.add(eventId)
+        if (eventDedup.size > EVENT_DEDUP_LIMIT) {
+          // Set iteration order is insertion order; delete the oldest.
+          const first = eventDedup.values().next().value
+          if (first !== undefined) eventDedup.delete(first)
+        }
+        return false
+      }
+
       const cfgSvc = yield* Config.Service
 
       const descendants = Effect.fnUntraced(
@@ -600,7 +670,7 @@ export namespace MCP {
         Effect.catch(() => Effect.succeed([] as number[])),
       )
 
-      function watch(s: State, name: string, client: MCPClient, timeout?: number, eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean; topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }> }) {
+      function watch(s: State, name: string, client: MCPClient, timeout?: number) {
         // Catch-all for any notification the SDK doesn't dispatch to a registered handler
         client.fallbackNotificationHandler = async (notification: any) => {
           // no-op: catch-all for unhandled notifications
@@ -622,120 +692,266 @@ export namespace MCP {
         // may fail when the schema comes from a different Zod version than the SDK.
         ;(client as any)._notificationHandlers.set("events/emit", async (notification: any) => {
           const event = notification.params
-          log.info("event received", { server: name, topic: event.topic, event_id: event.event_id })
+          // v2 spec wire format is camelCase (JSON-RPC convention): eventId,
+          // expiresAt, etc. We also accept snake_case for backward compat with
+          // older servers.
+          const eventId: string = event.eventId ?? event.event_id
+          const topic: string = event.topic
+          const priority: string | undefined = event.priority
+          const source: string | undefined = event.source
+          const expiresAt: string | undefined = event.expiresAt ?? event.expires_at
+          const retained: boolean | undefined = event.retained
 
-          // Defense-in-depth: drop events for topics the client did not subscribe to (Gap 5)
-          const activeSubs = subscriptions.get(name) ?? []
-          if (activeSubs.length > 0) {
-            const { mqttTopicMatch } = await import("@/session/event-queue")
-            const matchesAnySub = activeSubs.some((pattern) => mqttTopicMatch(pattern, event.topic))
-            if (!matchesAnySub) {
-              log.warn("dropping event for unsubscribed topic", { server: name, topic: event.topic })
-              return
-            }
+          log.info("event received", { server: name, topic, event_id: eventId })
+
+          // v2 spec: clients SHOULD dedupe by eventId with a bounded LRU.
+          if (eventId && dedupSeen(eventId)) {
+            log.debug("dropping duplicate event", { server: name, topic, event_id: eventId })
+            return
           }
 
-          // Push to the global event buffer instead of Effect.runPromise(bus.publish(...))
-          // because Effect.runPromise creates an isolated runtime whose PubSub
-          // instance is separate from the main runtime where prompt.ts subscribes.
-          // The raw JSON-RPC notification uses camelCase field names (eventId,
-          // requestedEffects, correlationId, expiresAt) because we registered
-          // the handler directly without schema-based parsing.
-          pushMcpEvent({
-            server: name,
-            topic: event.topic,
-            payload: event.payload,
-            event_id: event.eventId ?? event.event_id,
-            retained: event.retained,
-            requested_effects: event.requestedEffects ?? event.requested_effects,
-            permissions: eventPermissions ? {
-              inject_context: eventPermissions.inject_context,
-              notify_user: eventPermissions.notify_user,
-              trigger_turn: eventPermissions.trigger_turn,
-            } : undefined,
-            topicOverrides: eventPermissions?.topicOverrides,
-            source: event.source,
-            correlation_id: event.correlationId ?? event.correlation_id,
-            expires_at: event.expiresAt ?? event.expires_at,
-          })
+          // Non-destructive fan-out: iterate ALL active agent subscriptions
+          // on this server and deliver a copy to every agent whose patterns
+          // match the event topic. Reference implementation from the spec:
+          //
+          //   for each (pattern, agent_id) in all_agent_subscriptions:
+          //       if mqttTopicMatch(pattern, event.topic):
+          //           enqueue(agent_id, event)
+          const { mqttTopicMatch, resolveHandle } = await import("@/session/event-queue")
+          const agentMap = serverSubscriptions.get(name)
+          if (!agentMap || agentMap.size === 0) {
+            log.warn("dropping event -- no active agent subscriptions", { server: name, topic })
+            return
+          }
+          const eventConfig = serverEventConfig.get(name) ?? {
+            trust: "trusted" as const,
+            defaults: {},
+            topicOverrides: undefined,
+          }
+
+          let delivered = 0
+          for (const [agentId, sub] of agentMap.entries()) {
+            const matchingPattern = sub.patterns.find((pattern) => mqttTopicMatch(pattern, topic))
+            if (!matchingPattern) continue
+
+            // Find the matching topic declaration so we know the kind and
+            // suggestedHandle. We match the declaration using the server's
+            // original pattern (with {agent_id}); the resolved pattern from
+            // sub.patterns has that placeholder substituted, so we cannot
+            // simply compare strings. Match by index: sub.patterns[i]
+            // corresponds to sub.topicDecls[i] after filtering.
+            const patternIdx = sub.patterns.indexOf(matchingPattern)
+            const decl = patternIdx >= 0 ? sub.topicDecls[patternIdx] : undefined
+            const kind = decl?.kind ?? "content"
+            const suggestedHandle = decl?.suggestedHandle
+
+            const handle = resolveHandle({
+              topic,
+              kind,
+              perKindDefault: eventConfig.defaults[kind],
+              serverSuggestedHandle: suggestedHandle,
+              topicOverrides: eventConfig.topicOverrides,
+            })
+
+            // Drop at the earliest opportunity: no buffering, no logging noise.
+            if (handle === "drop") continue
+
+            pushMcpEvent({
+              agent_id: agentId,
+              server: name,
+              topic,
+              payload: event.payload,
+              event_id: eventId,
+              priority: priority as McpBufferedEvent["priority"],
+              handle,
+              kind,
+              retained,
+              source,
+              expires_at: expiresAt,
+            })
+            delivered += 1
+          }
+
+          if (delivered === 0) {
+            log.warn("dropping event -- no agent subscription matched", { server: name, topic })
+          }
         })
       }
 
-      const autoSubscribeEvents = Effect.fn("MCP.autoSubscribeEvents")(function* (
+      /**
+       * Connect-time discovery: fetch the server's topic catalog via
+       * `events/list` and cache it. No subscription calls are issued here --
+       * subscriptions are per-agent and happen later when a session registers
+       * via `subscribeAgent`.
+       *
+       * If the server does not support events, the request fails and we
+       * catch it silently.
+       */
+      const discoverEventTopics = Effect.fn("MCP.discoverEventTopics")(function* (
         key: string,
         client: MCPClient,
-        eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean; topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }> },
       ) {
         yield* Effect.tryPromise({
           try: async () => {
-            // Discover available event topics via events/list RPC.
-            // We cannot rely on getServerCapabilities().events because the
-            // SDK's ServerCapabilitiesSchema strips the events field during
-            // Zod parsing. Instead, we call events/list which returns the
-            // available topics directly. If the server doesn't support events,
-            // this request will fail and we catch the error below.
             const listResult = await client.request(
               { method: "events/list", params: {} },
               EventListResultSchema as any,
             )
-            const topics = (listResult?.topics ?? []) as Array<{ pattern: string }>
+            const topics = (listResult?.topics ?? []) as Array<{
+              pattern: string
+              kind?: string
+              suggestedHandle?: string
+            }>
             if (!topics.length) {
-              log.info("no event topics from server, skipping subscription", { server: key })
+              log.info("no event topics from server", { server: key })
+              serverTopicCatalog.set(key, [])
               return
             }
-
-            // Convert {param} placeholders to + wildcards for subscription.
-            // If the server assigned a session_id via InitializeResult._meta,
-            // substitute it into {session_id} slots so the server can enforce
-            // per-session topic isolation.
-            const sessionId = sessionIds.get(client)
-            const patterns = convertTopicPatterns(topics, sessionId)
-
-            // SDK compatibility: EventSubscribeResultSchema is a custom schema not part
-            // of the official MCP SDK types. Cast required because client.request() expects
-            // the SDK's own result schema types. The returned shape is validated by the
-            // zod schema at runtime.
-            const subscribeResult = await client.request(
-              { method: "events/subscribe", params: { topics: patterns } },
-              EventSubscribeResultSchema as any,
-            )
-
-            // Publish retained values as bus events
-            for (const retained of subscribeResult.retained ?? []) {
-              try {
-                await Effect.runPromise(
-                  bus.publish(McpEvent, {
-                    server: key,
-                    topic: retained.topic,
-                    payload: retained.payload,
-                    event_id: retained.event_id,
-                    retained: true,
-                    permissions: eventPermissions ? {
-                      inject_context: eventPermissions.inject_context,
-                      notify_user: eventPermissions.notify_user,
-                      trigger_turn: eventPermissions.trigger_turn,
-                    } : undefined,
-                    topicOverrides: eventPermissions?.topicOverrides,
-                    source: retained.source,
-                    correlation_id: retained.correlation_id,
-                    expires_at: retained.expires_at,
-                  }).pipe(Effect.ignore),
-                )
-              } catch (e) {
-                log.warn("failed to publish retained event", { topic: retained.topic, error: e })
-              }
-            }
-            subscriptions.set(key, (subscribeResult.subscribed ?? []).map((s: { pattern: string }) => s.pattern))
-            log.info("subscribed to events", {
-              server: key,
-              subscribed: (subscribeResult.subscribed ?? []).length,
-            })
+            const catalog: TopicDecl[] = topics.map((t) => ({
+              pattern: t.pattern,
+              kind: (t.kind as import("../session/event-queue").McpEventKind) ?? "content",
+              suggestedHandle: t.suggestedHandle as import("../session/event-queue").McpHandle | undefined,
+            }))
+            serverTopicCatalog.set(key, catalog)
+            log.info("discovered event topics", { server: key, count: catalog.length })
           },
           catch: (e) => {
-            log.warn("failed to subscribe to events", { server: key, error: String(e) })
+            log.debug("events/list not supported", { server: key, error: String(e) })
+            serverTopicCatalog.set(key, [])
             return e
           },
         }).pipe(Effect.ignore)
+      })
+
+      /**
+       * Register a per-agent subscription with every connected MCP server.
+       * The `{agent_id}` placeholder in each topic pattern is replaced with
+       * the literal agent ID so the server can enforce per-agent isolation.
+       *
+       * Agent subscriptions are the unit of fan-out: when an event arrives,
+       * the notification handler iterates ALL agent entries and delivers a
+       * copy to every agent whose patterns match the event topic.
+       *
+       * This is idempotent: calling it twice for the same agent replaces
+       * the previous subscription.
+       */
+      const subscribeAgent = Effect.fn("MCP.subscribeAgent")(function* (agentId: string) {
+        const s = yield* InstanceState.get(state)
+        for (const [serverName, client] of Object.entries(s.clients)) {
+          if (s.status[serverName]?.status !== "connected") continue
+          const catalog = serverTopicCatalog.get(serverName)
+          if (!catalog || catalog.length === 0) continue
+
+          const patterns = convertTopicPatterns(
+            catalog.map((t) => ({ pattern: t.pattern })),
+            agentId,
+          )
+          yield* Effect.tryPromise({
+            try: async () => {
+              const subscribeResult = await client.request(
+                { method: "events/subscribe", params: { topics: patterns } },
+                EventSubscribeResultSchema as any,
+              )
+
+              // Store the agent's subscription. We pair the resolved patterns
+              // with the original declarations so the notification handler can
+              // recover kind/suggestedHandle when an event arrives.
+              const agentMap = serverSubscriptions.get(serverName) ?? new Map<string, AgentSub>()
+              agentMap.set(agentId, {
+                patterns,
+                topicDecls: catalog,
+              })
+              serverSubscriptions.set(serverName, agentMap)
+
+              // Deliver retained values as if they had just been emitted. We
+              // only fan out to the subscribing agent -- other agents already
+              // received the retained value at their own subscribe time.
+              const eventConfig = serverEventConfig.get(serverName) ?? {
+                trust: "trusted" as const,
+                defaults: {},
+                topicOverrides: undefined,
+              }
+              for (const retained of subscribeResult.retained ?? []) {
+                try {
+                  const { mqttTopicMatch, resolveHandle } = await import("@/session/event-queue")
+                  // Find the matching declaration (by matching pattern -> topic).
+                  const patternIdx = patterns.findIndex((pattern) => mqttTopicMatch(pattern, retained.topic))
+                  const decl = patternIdx >= 0 ? catalog[patternIdx] : undefined
+                  const kind = decl?.kind ?? "content"
+                  const suggestedHandle = decl?.suggestedHandle
+                  const handle = resolveHandle({
+                    topic: retained.topic,
+                    kind,
+                    perKindDefault: eventConfig.defaults[kind],
+                    serverSuggestedHandle: suggestedHandle,
+                    topicOverrides: eventConfig.topicOverrides,
+                  })
+                  if (handle === "drop") continue
+                  pushMcpEvent({
+                    agent_id: agentId,
+                    server: serverName,
+                    topic: retained.topic,
+                    payload: retained.payload,
+                    event_id: retained.event_id,
+                    handle,
+                    kind,
+                    retained: true,
+                    source: (retained as any).source,
+                    expires_at: (retained as any).expires_at,
+                  })
+                } catch (e) {
+                  log.warn("failed to deliver retained event", { topic: retained.topic, error: e })
+                }
+              }
+
+              log.info("agent subscribed to events", {
+                server: serverName,
+                agentId,
+                patterns: patterns.length,
+                subscribed: (subscribeResult.subscribed ?? []).length,
+              })
+            },
+            catch: (e) => {
+              log.warn("failed to subscribe agent to events", {
+                server: serverName,
+                agentId,
+                error: String(e),
+              })
+              return e
+            },
+          }).pipe(Effect.ignore)
+        }
+      })
+
+      /**
+       * Unregister a per-agent subscription from every connected MCP server.
+       * Best-effort: network failures do not block local cleanup.
+       */
+      const unsubscribeAgent = Effect.fn("MCP.unsubscribeAgent")(function* (agentId: string) {
+        const s = yield* InstanceState.get(state)
+        for (const [serverName, client] of Object.entries(s.clients)) {
+          const agentMap = serverSubscriptions.get(serverName)
+          const sub = agentMap?.get(agentId)
+          if (!sub) continue
+          // Best-effort: 3-second timeout so a hung server does not delay cleanup.
+          yield* Effect.tryPromise({
+            try: () =>
+              withTimeout(
+                client.request(
+                  { method: "events/unsubscribe", params: { topics: sub.patterns } },
+                  EventUnsubscribeResultSchema as any,
+                ),
+                3_000,
+              ),
+            catch: (e) => {
+              log.debug("failed to unsubscribe agent", { server: serverName, agentId, error: String(e) })
+              return e
+            },
+          }).pipe(Effect.ignore)
+          agentMap!.delete(agentId)
+          if (agentMap!.size === 0) serverSubscriptions.delete(serverName)
+          log.info("agent unsubscribed from events", { server: serverName, agentId })
+        }
       })
 
       const state = yield* InstanceState.make<State>(
@@ -769,9 +985,9 @@ export namespace MCP {
                 if (result.mcpClient) {
                   s.clients[key] = result.mcpClient
                   s.defs[key] = result.defs!
-                  const perms = resolveEventPermissions(mcp)
-                  watch(s, key, result.mcpClient, mcp.timeout, perms)
-                  yield* autoSubscribeEvents(key, result.mcpClient, perms)
+                  serverEventConfig.set(key, resolveEventConfig(mcp))
+                  watch(s, key, result.mcpClient, mcp.timeout)
+                  yield* discoverEventTopics(key, result.mcpClient)
                 }
               }),
             { concurrency: "unbounded" },
@@ -839,19 +1055,29 @@ export namespace MCP {
 
         s.status[name] = result.status
         if (!result.mcpClient) {
-          subscriptions.delete(name)
+          serverSubscriptions.delete(name)
+          serverTopicCatalog.delete(name)
           yield* closeClient(s, name)
           delete s.clients[name]
           return result.status
         }
 
-        subscriptions.delete(name)
+        serverSubscriptions.delete(name)
+        serverTopicCatalog.delete(name)
         yield* closeClient(s, name)
         s.clients[name] = result.mcpClient
         s.defs[name] = result.defs!
-        const perms = resolveEventPermissions(mcp)
-        watch(s, name, result.mcpClient, mcp.timeout, perms)
-        yield* autoSubscribeEvents(name, result.mcpClient, perms)
+        serverEventConfig.set(name, resolveEventConfig(mcp))
+        watch(s, name, result.mcpClient, mcp.timeout)
+        yield* discoverEventTopics(name, result.mcpClient)
+
+        // Re-subscribe any agents that were registered before this server
+        // reconnected. Fan-out routing requires fresh subscriptions after a
+        // transport reset.
+        const previouslyRegisteredAgents = Array.from(serverSubscriptions.get(name)?.keys() ?? [])
+        for (const agentId of previouslyRegisteredAgents) {
+          yield* subscribeAgent(agentId)
+        }
         return result.status
       })
 
@@ -872,22 +1098,31 @@ export namespace MCP {
 
       const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
         const s = yield* InstanceState.get(state)
-        // Best-effort unsubscribe before closing transport.
+        // Best-effort unsubscribe before closing transport. Collect the union
+        // of all active agents' patterns so we only send one events/unsubscribe.
         // Use a 3-second timeout so a hung server does not delay disconnect.
-        const subs = subscriptions.get(name) ?? []
-        if (subs.length > 0 && s.clients[name]) {
-          yield* Effect.tryPromise({
-            try: () => withTimeout(
-              s.clients[name]!.request(
-                { method: "events/unsubscribe", params: { topics: subs } },
-                EventUnsubscribeResultSchema as any,
+        const agentMap = serverSubscriptions.get(name)
+        if (agentMap && s.clients[name]) {
+          const allPatterns = new Set<string>()
+          for (const sub of agentMap.values()) {
+            for (const p of sub.patterns) allPatterns.add(p)
+          }
+          if (allPatterns.size > 0) {
+            yield* Effect.tryPromise({
+              try: () => withTimeout(
+                s.clients[name]!.request(
+                  { method: "events/unsubscribe", params: { topics: Array.from(allPatterns) } },
+                  EventUnsubscribeResultSchema as any,
+                ),
+                3_000,
               ),
-              3_000,
-            ),
-            catch: () => undefined,
-          }).pipe(Effect.ignore)
+              catch: () => undefined,
+            }).pipe(Effect.ignore)
+          }
         }
-        subscriptions.delete(name)
+        serverSubscriptions.delete(name)
+        serverTopicCatalog.delete(name)
+        serverEventConfig.delete(name)
         yield* closeClient(s, name)
         delete s.clients[name]
         s.status[name] = { status: "disabled" }
@@ -1134,6 +1369,10 @@ export namespace MCP {
         return (expired ? "expired" : "authenticated") as AuthStatus
       })
 
+      const eventConfigFor = Effect.fn("MCP.eventConfig")(function* (mcpName: string) {
+        return serverEventConfig.get(mcpName)
+      })
+
       return Service.of({
         status,
         clients,
@@ -1152,6 +1391,9 @@ export namespace MCP {
         supportsOAuth,
         hasStoredTokens,
         getAuthStatus,
+        subscribeAgent,
+        unsubscribeAgent,
+        eventConfig: eventConfigFor,
       })
     }),
   )
@@ -1203,4 +1445,10 @@ export namespace MCP {
   export const hasStoredTokens = async (mcpName: string) => runPromise((svc) => svc.hasStoredTokens(mcpName))
 
   export const getAuthStatus = async (mcpName: string) => runPromise((svc) => svc.getAuthStatus(mcpName))
+
+  export const subscribeAgent = async (agentId: string) => runPromise((svc) => svc.subscribeAgent(agentId))
+
+  export const unsubscribeAgent = async (agentId: string) => runPromise((svc) => svc.unsubscribeAgent(agentId))
+
+  export const eventConfig = async (mcpName: string) => runPromise((svc) => svc.eventConfig(mcpName))
 }

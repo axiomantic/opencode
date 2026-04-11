@@ -281,7 +281,9 @@ export namespace LLM {
                     (serverName) => {
                       const serverCfg = mcpConfig[serverName]
                       if (!serverCfg || typeof serverCfg !== "object" || !("type" in serverCfg)) return "unknown"
-                      if ((serverCfg as any).events) return "configured"
+                      const events = (serverCfg as any).events
+                      if (events?.trust) return events.trust as string
+                      if (events) return "configured"
                       return "trusted"
                     },
                   ),

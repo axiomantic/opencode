@@ -1356,12 +1356,29 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let step = 0
           const session = yield* sessions.get(sessionID)
 
+          // Register this session as an MCP event agent. Subscriptions are
+          // per-agent (spec v2): the MCP server replaces {agent_id} in its
+          // topic patterns with the literal session ID, so we only receive
+          // events addressed to this session.
+          //
+          // Subscribe on each loop entry: reconnects, test fixtures, and
+          // multi-turn sessions all converge to the same state. The call is
+          // idempotent; calling it twice for the same sessionID replaces
+          // the previous subscription without side effects.
+          yield* mcp.subscribeAgent(sessionID).pipe(Effect.ignore)
+
           // Bridge MCP events into the per-session EventQueue.
           // Events are buffered in the global mcpEventBuffer (populated by the MCP
           // notification handler which runs in an async callback outside the Effect
           // runtime). We drain the buffer at each loop iteration below, not via bus
           // subscription, because Effect.runPromise() in the notification handler
           // creates an isolated runtime whose PubSub is separate from this one.
+          //
+          // Per spec v2 the buffer is fanned out at the notification handler
+          // layer: each entry carries an `agent_id` identifying the target
+          // opencode session. This loop only consumes entries addressed to
+          // its own sessionID; entries for other sessions remain in the
+          // buffer for their respective loops to drain.
 
           while (true) {
             yield* status.set(sessionID, { type: "busy" })
@@ -1369,18 +1386,37 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
 
-            // Drain MCP events from the global buffer into the EventQueue.
-            // Events arrive here because the MCP notification handler runs in an
-            // async callback outside the Effect runtime and can't publish to the
-            // Effect Bus directly (Effect.runPromise creates an isolated runtime).
+            // Drain entries for this session from the global buffer into the
+            // per-session EventQueue. Entries for other agents are preserved.
             if (mcpEventBuffer.length > 0) {
-              const buffered = mcpEventBuffer.splice(0)
-              for (const event of buffered) {
-                yield* eventQueue.enqueue(sessionID, event)
+              const remaining: typeof mcpEventBuffer = []
+              const mine: typeof mcpEventBuffer = []
+              for (const e of mcpEventBuffer) {
+                if (e.agent_id === sessionID) mine.push(e)
+                else remaining.push(e)
+              }
+              if (mine.length > 0) {
+                mcpEventBuffer.splice(0, mcpEventBuffer.length, ...remaining)
+                for (const event of mine) {
+                  yield* eventQueue.enqueue(sessionID, {
+                    server: event.server,
+                    topic: event.topic,
+                    payload: event.payload,
+                    event_id: event.event_id,
+                    priority: event.priority,
+                    handle: event.handle,
+                    kind: event.kind,
+                    retained: event.retained,
+                    source: event.source,
+                    expires_at: event.expires_at,
+                  })
+                }
               }
             }
 
-            // Drain MCP events at loop boundary
+            // Drain MCP events at loop boundary. high priority always drains;
+            // normal/low only drain at step 0 or greater when we're about to
+            // send a new turn.
             const highEvents = yield* eventQueue.drain(sessionID, { maxPriority: "high" })
             const normalEvents =
               step > 0
@@ -1395,7 +1431,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 (serverName) => {
                   const cfg = mcpConfig[serverName]
                   if (!cfg || typeof cfg !== "object" || !("type" in cfg)) return "unknown"
-                  if ((cfg as any).events) return "configured"
+                  const events = (cfg as any).events
+                  if (events?.trust) return events.trust as string
+                  if (events) return "configured"
                   return "trusted"
                 },
               )

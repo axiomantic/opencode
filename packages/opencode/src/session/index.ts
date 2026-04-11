@@ -465,6 +465,15 @@ export namespace Session {
             yield* remove(child.id)
           }
           yield* unshare(sessionID).pipe(Effect.ignore)
+          // Unregister this session's MCP event subscription from all connected
+          // servers. Dynamic import to avoid a session -> mcp layer dependency.
+          yield* Effect.tryPromise({
+            try: async () => {
+              const { MCP } = await import("../mcp")
+              await MCP.unsubscribeAgent(sessionID)
+            },
+            catch: () => undefined,
+          }).pipe(Effect.ignore)
           yield* Effect.sync(() => {
             SyncEvent.run(Event.Deleted, { sessionID, info: session })
             SyncEvent.remove(sessionID)
