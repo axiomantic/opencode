@@ -1479,6 +1479,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   text: content,
                   synthetic: true,
                 }
+                // Persist and publish the synthetic user and its part. The
+                // assistant message that follows in this loop iteration uses
+                // `lastUser.id` as its `parentID` (line ~1571), so the parent
+                // must be a real, persisted message or the web UI cannot
+                // attach the assistant turn to any user message and silently
+                // drops it from the timeline.
+                yield* sessions.updateMessage(syntheticUser)
+                yield* sessions.updatePart(syntheticPart)
                 msgs.push({ info: syntheticUser, parts: [syntheticPart] })
               }
             }

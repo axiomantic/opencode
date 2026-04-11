@@ -18,6 +18,7 @@ import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { Session } from "../../src/session"
+import { EventQueue } from "../../src/session/event-queue"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { AppFileSystem } from "../../src/filesystem"
@@ -175,14 +176,17 @@ function makeHttp() {
   const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
   const proc = SessionProcessor.layer.pipe(Layer.provideMerge(deps))
   const compact = SessionCompaction.layer.pipe(Layer.provideMerge(proc), Layer.provideMerge(deps))
+  const eventQueue = EventQueue.layer.pipe(Layer.provideMerge(deps))
   return Layer.mergeAll(
     TestLLMServer.layer,
+    eventQueue,
     SessionPrompt.layer.pipe(
       Layer.provideMerge(compact),
       Layer.provideMerge(proc),
       Layer.provideMerge(registry),
       Layer.provideMerge(trunc),
       Layer.provide(Instruction.defaultLayer),
+      Layer.provideMerge(eventQueue),
       Layer.provideMerge(deps),
     ),
   )
@@ -431,6 +435,75 @@ it.live("static loop consumes queued replies across turns", () =>
 
       expect(yield* llm.hits).toHaveLength(2)
       expect(yield* llm.pending).toBe(0)
+    }),
+    { git: true, config: providerCfg },
+  ),
+  15_000,
+)
+
+it.live("MCP event injection persists a user message the assistant parents to", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const events = yield* EventQueue.Service
+      const chat = yield* sessions.create({
+        title: "mcp event injection",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+
+      // Turn 1: ordinary prompt so the session has an agent/model on record.
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.text("world one")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      // Enqueue a high-priority event. The loop drains "high" on every
+      // iteration, including step 0, which triggers the synthetic-user
+      // injection path in runLoopInner.
+      yield* events.enqueue(chat.id, {
+        server: "test",
+        topic: "test.event",
+        payload: { note: "injected payload" },
+        event_id: "evt-1",
+        priority: "high",
+        handle: "inject",
+        kind: "content",
+      })
+
+      // Turn 2: start a new turn so the loop runs again and drains the
+      // queue, injecting the synthetic user before calling the model.
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello again" }],
+      })
+      yield* llm.text("response after event")
+      const second = yield* prompt.loop({ sessionID: chat.id })
+      expect(second.info.role).toBe("assistant")
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const assistant = msgs.findLast((m) => m.info.role === "assistant")
+      if (!assistant || assistant.info.role !== "assistant") throw new Error("no assistant persisted")
+      const assistantInfo = assistant.info as MessageV2.Assistant
+      // The assistant must parent to a real, persisted user message.
+      // Before the fix, the synthetic user was only pushed to the in-memory
+      // msgs array, so `parentID` pointed at a ghost ID that the web UI
+      // could not resolve, dropping the turn from the timeline.
+      const parent = msgs.find((m) => m.info.id === assistantInfo.parentID)
+      expect(parent?.info.role).toBe("user")
+      // The parent is the synthetic user carrying the injected event
+      // payload as a synthetic text part.
+      if (!parent || parent.info.role !== "user") throw new Error("parent not user")
+      const synth = parent.parts.find(
+        (p): p is MessageV2.TextPart => p.type === "text" && "synthetic" in p && p.synthetic === true,
+      )
+      expect(synth?.text ?? "").toContain("injected payload")
     }),
     { git: true, config: providerCfg },
   ),
