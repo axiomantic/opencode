@@ -23,7 +23,7 @@ import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { ToolRegistry } from "../tool/registry"
 import { Runner } from "@/effect/runner"
 import { Config } from "../config/config"
-import { MCP } from "../mcp"
+import { MCP, mcpEventBuffer } from "../mcp"
 import { LSP } from "../lsp"
 import { ReadTool } from "../tool/read"
 import { FileTime } from "../file/time"
@@ -1356,39 +1356,29 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let step = 0
           const session = yield* sessions.get(sessionID)
 
-          // Bridge bus events into the per-session EventQueue.
-          // forkScoped ties the subscription fiber to the child scope created by
-          // Effect.scoped in `loop`, which closes when the prompt loop ends.
-          // The original forkIn(scope) used the service-level scope shared across all
-          // prompt() calls, causing fiber accumulation and duplicate event delivery.
-          // NOTE: This bridge enqueues ALL MCP events regardless of which MCP servers
-          // are connected to this session. In a multi-session environment every session
-          // receives every event. Per-session server filtering would require the session
-          // to track its connected MCP server names and is deferred as future work.
-          yield* bus.subscribe(MCP.McpEvent).pipe(
-            Stream.runForEach((event) =>
-              eventQueue.enqueue(sessionID, {
-                server: event.properties.server,
-                topic: event.properties.topic,
-                payload: event.properties.payload,
-                event_id: event.properties.event_id,
-                retained: event.properties.retained,
-                requested_effects: event.properties.requested_effects,
-                permissions: event.properties.permissions,
-                topicOverrides: event.properties.topicOverrides,
-                source: event.properties.source,
-                correlation_id: event.properties.correlation_id,
-                expires_at: event.properties.expires_at,
-              }),
-            ),
-            Effect.forkScoped,
-          )
+          // Bridge MCP events into the per-session EventQueue.
+          // Events are buffered in the global mcpEventBuffer (populated by the MCP
+          // notification handler which runs in an async callback outside the Effect
+          // runtime). We drain the buffer at each loop iteration below, not via bus
+          // subscription, because Effect.runPromise() in the notification handler
+          // creates an isolated runtime whose PubSub is separate from this one.
 
           while (true) {
             yield* status.set(sessionID, { type: "busy" })
             log.info("loop", { step, sessionID })
 
             let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+
+            // Drain MCP events from the global buffer into the EventQueue.
+            // Events arrive here because the MCP notification handler runs in an
+            // async callback outside the Effect runtime and can't publish to the
+            // Effect Bus directly (Effect.runPromise creates an isolated runtime).
+            if (mcpEventBuffer.length > 0) {
+              const buffered = mcpEventBuffer.splice(0)
+              for (const event of buffered) {
+                yield* eventQueue.enqueue(sessionID, event)
+              }
+            }
 
             // Drain MCP events at loop boundary
             const highEvents = yield* eventQueue.drain(sessionID, { maxPriority: "high" })

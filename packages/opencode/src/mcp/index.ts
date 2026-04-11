@@ -9,7 +9,7 @@ import {
   type Tool as MCPToolDef,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
-import { EventEmitNotificationSchema, EventSubscribeResultSchema, EventUnsubscribeResultSchema } from "@modelcontextprotocol/core/packages/core/src/types/schemas.js"
+import { EventEmitNotificationSchema, EventSubscribeResultSchema, EventUnsubscribeResultSchema, EventListResultSchema } from "@modelcontextprotocol/core/packages/core/src/types/schemas.js"
 import { Config } from "../config/config"
 import { Log } from "../util/log"
 import { NamedError } from "@opencode-ai/util/error"
@@ -64,6 +64,62 @@ export function convertTopicPatterns(topics: Array<{ pattern: string }>, session
     }
     return pattern.replace(/\{[^}]+\}/g, "+")
   })
+}
+
+/**
+ * Buffered MCP event, pushed by the notification handler and drained by the
+ * prompt loop in prompt.ts.
+ */
+export interface McpBufferedEvent {
+  server: string
+  topic: string
+  payload: unknown
+  event_id: string
+  retained?: boolean
+  requested_effects?: Array<{ type: "inject_context" | "notify_user" | "trigger_turn"; priority?: "low" | "normal" | "high" | "urgent" }>
+  permissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean }
+  topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }>
+  source?: string
+  correlation_id?: string
+  expires_at?: string
+}
+
+/**
+ * Global event buffer for MCP events.
+ *
+ * The MCP notification handler pushes events here from an async callback where
+ * Effect.runPromise creates an isolated runtime. The prompt loop in prompt.ts
+ * drains events from this buffer at each iteration, bridging the runtime
+ * isolation gap between the MCP SDK callback and the main Effect runtime where
+ * the Bus service is properly scoped.
+ *
+ * Thread safety: Node.js/Bun execute JavaScript on a single thread. Individual
+ * array operations (push, splice) run to completion without preemption, so no
+ * mutex or lock is needed. If the runtime model ever changes to true
+ * multi-threading, this assumption must be revisited.
+ *
+ * Capacity: bounded to MAX_BUFFER_SIZE entries. When the limit is exceeded,
+ * the oldest events are evicted (FIFO) to prevent unbounded memory growth
+ * from a misbehaving or high-throughput MCP server.
+ */
+const MAX_BUFFER_SIZE = 100
+
+export const mcpEventBuffer: McpBufferedEvent[] = []
+
+/**
+ * Append an event to the global buffer, evicting the oldest entries when the
+ * buffer exceeds MAX_BUFFER_SIZE.
+ */
+export function pushMcpEvent(event: McpBufferedEvent): void {
+  mcpEventBuffer.push(event)
+  if (mcpEventBuffer.length > MAX_BUFFER_SIZE) {
+    const excess = mcpEventBuffer.length - MAX_BUFFER_SIZE
+    mcpEventBuffer.splice(0, excess)
+    Log.create({ service: "mcp" }).warn("event buffer overflow, dropped oldest events", {
+      dropped: excess,
+      bufferSize: MAX_BUFFER_SIZE,
+    })
+  }
 }
 
 export namespace MCP {
@@ -545,6 +601,10 @@ export namespace MCP {
       )
 
       function watch(s: State, name: string, client: MCPClient, timeout?: number, eventPermissions?: { inject_context: boolean; notify_user: boolean; trigger_turn: boolean; topicOverrides?: Record<string, { inject_context?: boolean; notify_user?: boolean; trigger_turn?: boolean }> }) {
+        // Catch-all for any notification the SDK doesn't dispatch to a registered handler
+        client.fallbackNotificationHandler = async (notification: any) => {
+          // no-op: catch-all for unhandled notifications
+        }
         client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
           log.info("tools list changed notification received", { server: name })
           if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
@@ -557,7 +617,10 @@ export namespace MCP {
           await Effect.runPromise(bus.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
         })
 
-        client.setNotificationHandler(EventEmitNotificationSchema, async (notification) => {
+        // Register event handler by method name directly instead of using
+        // setNotificationHandler(schema, ...) because the SDK's getMethodLiteral()
+        // may fail when the schema comes from a different Zod version than the SDK.
+        ;(client as any)._notificationHandlers.set("events/emit", async (notification: any) => {
           const event = notification.params
           log.info("event received", { server: name, topic: event.topic, event_id: event.event_id })
 
@@ -572,25 +635,29 @@ export namespace MCP {
             }
           }
 
-          await Effect.runPromise(
-            bus.publish(McpEvent, {
-              server: name,
-              topic: event.topic,
-              payload: event.payload,
-              event_id: event.event_id,
-              retained: event.retained,
-              requested_effects: event.requested_effects,
-              permissions: eventPermissions ? {
-                inject_context: eventPermissions.inject_context,
-                notify_user: eventPermissions.notify_user,
-                trigger_turn: eventPermissions.trigger_turn,
-              } : undefined,
-              topicOverrides: eventPermissions?.topicOverrides,
-              source: event.source,
-              correlation_id: event.correlation_id,
-              expires_at: event.expires_at,
-            }).pipe(Effect.ignore),
-          )
+          // Push to the global event buffer instead of Effect.runPromise(bus.publish(...))
+          // because Effect.runPromise creates an isolated runtime whose PubSub
+          // instance is separate from the main runtime where prompt.ts subscribes.
+          // The raw JSON-RPC notification uses camelCase field names (eventId,
+          // requestedEffects, correlationId, expiresAt) because we registered
+          // the handler directly without schema-based parsing.
+          pushMcpEvent({
+            server: name,
+            topic: event.topic,
+            payload: event.payload,
+            event_id: event.eventId ?? event.event_id,
+            retained: event.retained,
+            requested_effects: event.requestedEffects ?? event.requested_effects,
+            permissions: eventPermissions ? {
+              inject_context: eventPermissions.inject_context,
+              notify_user: eventPermissions.notify_user,
+              trigger_turn: eventPermissions.trigger_turn,
+            } : undefined,
+            topicOverrides: eventPermissions?.topicOverrides,
+            source: event.source,
+            correlation_id: event.correlationId ?? event.correlation_id,
+            expires_at: event.expiresAt ?? event.expires_at,
+          })
         })
       }
 
@@ -601,17 +668,22 @@ export namespace MCP {
       ) {
         yield* Effect.tryPromise({
           try: async () => {
-            // Check server capabilities for events
-            // SDK compatibility: MCPClient.getServerCapabilities() exists at runtime but
-            // is not exposed in the published type definitions as of @modelcontextprotocol/sdk 1.x.
-            // Cast to any until the SDK exposes this in its public API.
-            const serverCapabilities = (client as any).getServerCapabilities?.() as
-              | { events?: { topics?: Array<{ pattern: string }> } }
-              | undefined
-            const eventsCapability = serverCapabilities?.events
-            if (!eventsCapability?.topics?.length) return
+            // Discover available event topics via events/list RPC.
+            // We cannot rely on getServerCapabilities().events because the
+            // SDK's ServerCapabilitiesSchema strips the events field during
+            // Zod parsing. Instead, we call events/list which returns the
+            // available topics directly. If the server doesn't support events,
+            // this request will fail and we catch the error below.
+            const listResult = await client.request(
+              { method: "events/list", params: {} },
+              EventListResultSchema as any,
+            )
+            const topics = (listResult?.topics ?? []) as Array<{ pattern: string }>
+            if (!topics.length) {
+              log.info("no event topics from server, skipping subscription", { server: key })
+              return
+            }
 
-            const topics = eventsCapability.topics as Array<{ pattern: string }>
             // Convert {param} placeholders to + wildcards for subscription.
             // If the server assigned a session_id via InitializeResult._meta,
             // substitute it into {session_id} slots so the server can enforce
