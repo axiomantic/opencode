@@ -4,12 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
-import {
-  CallToolResultSchema,
-  type Tool as MCPToolDef,
-  ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js"
-import { EventEmitNotificationSchema, EventSubscribeResultSchema, EventUnsubscribeResultSchema, EventListResultSchema } from "@modelcontextprotocol/core/packages/core/src/types/schemas.js"
+import { type Tool as MCPToolDef } from "@modelcontextprotocol/sdk/types.js"
 import { Config } from "../config/config"
 import { Log } from "../util/log"
 import { NamedError } from "@opencode-ai/util/error"
@@ -294,7 +289,6 @@ export namespace MCP {
             name: mcpTool.name,
             arguments: (args || {}) as Record<string, unknown>,
           },
-          CallToolResultSchema,
           {
             resetTimeoutOnProgress: true,
             timeout,
@@ -401,10 +395,6 @@ export namespace MCP {
        * Connect a client via the given transport with resource safety:
        * on failure the transport is closed; on success the caller owns it.
        */
-      // Maps MCP clients to their server-assigned session UUID (from InitializeResult._meta.session_id).
-      // Used to substitute {session_id} in event topic patterns with the real UUID.
-      const sessionIds = new Map<MCPClient, string>()
-
       const connectTransport = (transport: Transport, timeout: number) =>
         Effect.acquireUseRelease(
           Effect.succeed(transport),
@@ -412,18 +402,6 @@ export namespace MCP {
             Effect.tryPromise({
               try: () => {
                 const client = new Client({ name: "opencode", version: Installation.VERSION })
-                // Intercept the initialize request to capture _meta.session_id from the response.
-                // The SDK validates & uses the result but does not expose _meta publicly.
-                if (typeof client.request === "function") {
-                  const origRequest = client.request.bind(client)
-                  ;(client as any).request = async function (req: any, schema: any, opts?: any) {
-                    const result = await origRequest(req, schema, opts)
-                    if (req.method === "initialize" && result?._meta?.session_id) {
-                      sessionIds.set(client, result._meta.session_id as string)
-                    }
-                    return result
-                  }
-                }
                 return withTimeout(client.connect(t), timeout).then(() => client)
               },
               catch: (e) => (e instanceof Error ? e : new Error(String(e))),
@@ -675,7 +653,7 @@ export namespace MCP {
         client.fallbackNotificationHandler = async (notification: any) => {
           // no-op: catch-all for unhandled notifications
         }
-        client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        client.setNotificationHandler("notifications/tools/list_changed", async () => {
           log.info("tools list changed notification received", { server: name })
           if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
@@ -687,11 +665,11 @@ export namespace MCP {
           await Effect.runPromise(bus.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
         })
 
-        // Register event handler by method name directly instead of using
-        // setNotificationHandler(schema, ...) because the SDK's getMethodLiteral()
-        // may fail when the schema comes from a different Zod version than the SDK.
-        ;(client as any)._notificationHandlers.set("events/emit", async (notification: any) => {
-          const event = notification.params
+        // Register event handler via the SDK's public setNotificationHandler API.
+        // The fork at github:axiomantic/typescript-sdk takes a method string and
+        // looks up the schema internally, so we pass "events/emit" directly.
+        client.setNotificationHandler("events/emit", async (notification) => {
+          const event = notification.params as any
           // v2 spec wire format is camelCase (JSON-RPC convention): eventId,
           // expiresAt, etc. We also accept snake_case for backward compat with
           // older servers.
@@ -793,10 +771,7 @@ export namespace MCP {
       ) {
         yield* Effect.tryPromise({
           try: async () => {
-            const listResult = await client.request(
-              { method: "events/list", params: {} },
-              EventListResultSchema as any,
-            )
+            const listResult = await client.request({ method: "events/list", params: {} })
             const topics = (listResult?.topics ?? []) as Array<{
               pattern: string
               kind?: string
@@ -848,10 +823,10 @@ export namespace MCP {
           )
           yield* Effect.tryPromise({
             try: async () => {
-              const subscribeResult = await client.request(
-                { method: "events/subscribe", params: { topics: patterns } },
-                EventSubscribeResultSchema as any,
-              )
+              const subscribeResult = await client.request({
+                method: "events/subscribe",
+                params: { topics: patterns },
+              })
 
               // Store the agent's subscription. We pair the resolved patterns
               // with the original declarations so the notification handler can
@@ -892,7 +867,7 @@ export namespace MCP {
                     server: serverName,
                     topic: retained.topic,
                     payload: retained.payload,
-                    event_id: retained.event_id,
+                    event_id: retained.eventId,
                     handle,
                     kind,
                     retained: true,
@@ -937,10 +912,10 @@ export namespace MCP {
           yield* Effect.tryPromise({
             try: () =>
               withTimeout(
-                client.request(
-                  { method: "events/unsubscribe", params: { topics: sub.patterns } },
-                  EventUnsubscribeResultSchema as any,
-                ),
+                client.request({
+                  method: "events/unsubscribe",
+                  params: { topics: sub.patterns },
+                }),
                 3_000,
               ),
             catch: (e) => {
@@ -1008,7 +983,6 @@ export namespace MCP {
                         } catch {}
                       }
                     }
-                    sessionIds.delete(client)
                     yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
                   }),
                 { concurrency: "unbounded" },
@@ -1025,7 +999,6 @@ export namespace MCP {
         const client = s.clients[name]
         delete s.defs[name]
         if (!client) return Effect.void
-        sessionIds.delete(client)
         return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
       }
 
@@ -1110,10 +1083,10 @@ export namespace MCP {
           if (allPatterns.size > 0) {
             yield* Effect.tryPromise({
               try: () => withTimeout(
-                s.clients[name]!.request(
-                  { method: "events/unsubscribe", params: { topics: Array.from(allPatterns) } },
-                  EventUnsubscribeResultSchema as any,
-                ),
+                s.clients[name]!.request({
+                  method: "events/unsubscribe",
+                  params: { topics: Array.from(allPatterns) },
+                }),
                 3_000,
               ),
               catch: () => undefined,
